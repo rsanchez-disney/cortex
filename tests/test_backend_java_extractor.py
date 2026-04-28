@@ -931,3 +931,417 @@ class TestEndpointDeduplication:
             manifest = extractor.extract(SAMPLE_BACKEND_JAVA_REPO, service_yaml)
         # h2 is a test dep in the fixture → should be secondary since postgresql is primary
         assert "h2" in manifest.secondary_databases
+
+
+# ---------------------------------------------------------------------------
+# TestCosmosDBDetection — Fix 1
+# ---------------------------------------------------------------------------
+
+
+class TestCosmosDBDetection:
+    """Tests for expanded Cosmos DB detection (Fix 1)."""
+
+    def test_cosmos_detected_from_spring_cloud_azure_dep(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Detects Cosmos DB from com.azure.spring:spring-cloud-azure-starter-data-cosmos dep."""
+        (tmp_path / "build.gradle").write_text(
+            "dependencies {\n"
+            "    implementation 'com.azure.spring:spring-cloud-azure-starter-data-cosmos:5.7.0'\n"
+            "}\n"
+        )
+        primary, _secondary, _count = extractor._parse_database_info(tmp_path)
+        assert primary == "cosmos"
+
+    def test_cosmos_detected_from_old_azure_dep(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Detects Cosmos DB from legacy com.azure:azure-spring-data-cosmos dep."""
+        (tmp_path / "build.gradle").write_text(
+            "dependencies {\n"
+            "    implementation 'com.azure:azure-spring-data-cosmos:3.40.0'\n"
+            "}\n"
+        )
+        primary, _secondary, _count = extractor._parse_database_info(tmp_path)
+        assert primary == "cosmos"
+
+    def test_cosmos_detected_from_yaml_cosmos_section(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Detects Cosmos DB from spring.cloud.azure.cosmos: key in application.yml."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n"
+            "  cloud:\n"
+            "    azure:\n"
+            "      cosmos:\n"
+            "        endpoint: https://example.documents.azure.com:443/\n"
+            "        key: dummy-key\n"
+            "        database: my-db\n"
+        )
+        primary, _secondary, _count = extractor._parse_database_info(tmp_path)
+        assert primary == "cosmos"
+
+    def test_fixture_detects_cosmos_as_secondary(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """Fixture has both postgresql (datasource URL) and cosmos (YAML section + TOML dep)."""
+        primary, secondary, _count = extractor._parse_database_info(SAMPLE_BACKEND_JAVA_REPO)
+        assert primary == "postgresql"
+        assert "cosmos" in secondary
+
+
+# ---------------------------------------------------------------------------
+# TestRequestMappingPathAttr — Fix 2
+# ---------------------------------------------------------------------------
+
+
+class TestRequestMappingPathAttr:
+    """Tests for @RequestMapping(path = ...) parsing (Fix 2)."""
+
+    def test_path_attribute_parsed(self, extractor: BackendJavaExtractor) -> None:
+        """_extract_request_mapping_path parses path= attribute."""
+        content = '@RequestMapping(path = "/v1/admin", produces = "application/json")\npublic class MyController {}'
+        result = extractor._extract_request_mapping_path(content)
+        assert result == "/v1/admin"
+
+    def test_value_attribute_still_parsed(self, extractor: BackendJavaExtractor) -> None:
+        """_extract_request_mapping_path still parses value= attribute."""
+        content = '@RequestMapping(value = "/v1/orders")\npublic class MyController {}'
+        result = extractor._extract_request_mapping_path(content)
+        assert result == "/v1/orders"
+
+    def test_bare_string_still_parsed(self, extractor: BackendJavaExtractor) -> None:
+        """_extract_request_mapping_path parses bare string (no attribute name)."""
+        content = '@RequestMapping("/v1/items")\npublic class MyController {}'
+        result = extractor._extract_request_mapping_path(content)
+        assert result == "/v1/items"
+
+    def test_path_attr_used_in_endpoint_extraction(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Controller using @RequestMapping(path=...) produces correct full endpoint paths."""
+        ctrl_dir = tmp_path / "src" / "main" / "java" / "com" / "example" / "controllers"
+        ctrl_dir.mkdir(parents=True)
+        (ctrl_dir / "AdminController.java").write_text(
+            "package com.example.controllers;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "@RestController\n"
+            '@RequestMapping(path = "/v1/admin", produces = "application/json")\n'
+            "public class AdminController {\n"
+            "    @GetMapping(\"/users\")\n"
+            "    public String listUsers() { return \"\"; }\n"
+            "    @PostMapping(\"/users\")\n"
+            "    public String createUser() { return \"\"; }\n"
+            "}\n"
+        )
+        contracts = extractor.find_api_contracts(tmp_path)
+        assert len(contracts) == 1
+        paths = [ep.path for ep in contracts[0].endpoints]
+        assert "/v1/admin/users" in paths
+        methods = {ep.method for ep in contracts[0].endpoints}
+        assert "GET" in methods
+        assert "POST" in methods
+
+
+# ---------------------------------------------------------------------------
+# TestOperationDescriptionFallback — Fix 3
+# ---------------------------------------------------------------------------
+
+
+class TestOperationDescriptionFallback:
+    """Tests for @Operation(description=...) fallback (Fix 3)."""
+
+    def test_description_used_when_no_summary(self, extractor: BackendJavaExtractor) -> None:
+        """Falls back to description when summary is absent."""
+        text = '@Operation(description = "Retrieve user account details")'
+        assert extractor._extract_operation_summary(text) == "Retrieve user account details"
+
+    def test_summary_preferred_over_description(self, extractor: BackendJavaExtractor) -> None:
+        """summary wins when both summary and description are present."""
+        text = '@Operation(summary = "Get account", description = "Retrieve user account details")'
+        assert extractor._extract_operation_summary(text) == "Get account"
+
+    def test_description_filtering_still_applies(self, extractor: BackendJavaExtractor) -> None:
+        """Path-like values in description are discarded just like summary values."""
+        text = '@Operation(description = "/accounts/redeem")'
+        assert extractor._extract_operation_summary(text) is None
+
+    def test_try_extract_op_attr_summary(self, extractor: BackendJavaExtractor) -> None:
+        """_try_extract_op_attr extracts summary attribute."""
+        text = '@Operation(summary = "List rewards")'
+        assert extractor._try_extract_op_attr(text, "summary") == "List rewards"
+
+    def test_try_extract_op_attr_description(self, extractor: BackendJavaExtractor) -> None:
+        """_try_extract_op_attr extracts description attribute."""
+        text = '@Operation(description = "Create entitlement record")'
+        assert extractor._try_extract_op_attr(text, "description") == "Create entitlement record"
+
+    def test_try_extract_op_attr_missing_returns_none(self, extractor: BackendJavaExtractor) -> None:
+        """_try_extract_op_attr returns None when attribute is absent."""
+        text = '@Operation(description = "Retrieve account")'
+        assert extractor._try_extract_op_attr(text, "summary") is None
+
+    def test_description_endpoint_captured_in_fixture(self, extractor: BackendJavaExtractor) -> None:
+        """Fixture RewardsApi uses description= and those summaries are captured."""
+        contracts = extractor.find_api_contracts(SAMPLE_BACKEND_JAVA_REPO)
+        assert len(contracts) == 1
+        summaries = {ep.summary for ep in contracts[0].endpoints if ep.summary}
+        # RewardsApi uses description= for two endpoints
+        assert "List all available rewards" in summaries
+        assert "Redeem a reward by ID" in summaries
+        # And summary= for one
+        assert "Get reward details" in summaries
+
+
+# ---------------------------------------------------------------------------
+# TestApiInterfacePattern — Fix 4
+# ---------------------------------------------------------------------------
+
+
+class TestApiInterfacePattern:
+    """Tests for API interface pattern endpoint discovery (Fix 4)."""
+
+    def test_controller_with_no_mappings_falls_back_to_interface(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """When a @RestController has no @*Mapping, endpoints are found on the interface."""
+        # Create the interface with route annotations
+        iface_dir = tmp_path / "src" / "main" / "java" / "com" / "example" / "api"
+        iface_dir.mkdir(parents=True)
+        (iface_dir / "LoyaltyApi.java").write_text(
+            "package com.example.api;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "@RequestMapping(\"/v1/loyalty\")\n"
+            "public interface LoyaltyApi {\n"
+            "    @GetMapping(\"/points\")\n"
+            "    Object getPoints();\n"
+            "    @PostMapping(\"/redeem\")\n"
+            "    Object redeem();\n"
+            "}\n"
+        )
+        # Create the controller that implements the interface (no mapping annotations)
+        ctrl_dir = tmp_path / "src" / "main" / "java" / "com" / "example" / "controllers"
+        ctrl_dir.mkdir(parents=True)
+        (ctrl_dir / "LoyaltyController.java").write_text(
+            "package com.example.controllers;\n"
+            "import com.example.api.LoyaltyApi;\n"
+            "import org.springframework.web.bind.annotation.RestController;\n"
+            "@RestController\n"
+            "public class LoyaltyController implements LoyaltyApi {\n"
+            "    @Override\n"
+            "    public Object getPoints() { return null; }\n"
+            "    @Override\n"
+            "    public Object redeem() { return null; }\n"
+            "}\n"
+        )
+        contracts = extractor.find_api_contracts(tmp_path)
+        assert len(contracts) == 1
+        paths = [ep.path for ep in contracts[0].endpoints]
+        assert "/v1/loyalty/points" in paths
+        assert "/v1/loyalty/redeem" in paths
+        methods = {ep.method for ep in contracts[0].endpoints}
+        assert "GET" in methods
+        assert "POST" in methods
+
+    def test_controller_with_own_mappings_not_delegated(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """A @RestController with its own @*Mapping methods is NOT delegated to any interface."""
+        ctrl_dir = tmp_path / "src" / "main" / "java" / "com" / "example" / "controllers"
+        ctrl_dir.mkdir(parents=True)
+        (ctrl_dir / "PaymentController.java").write_text(
+            "package com.example.controllers;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "@RestController\n"
+            "@RequestMapping(\"/v1/payments\")\n"
+            "public class PaymentController implements java.io.Serializable {\n"
+            "    @GetMapping\n"
+            "    public String list() { return \"\"; }\n"
+            "}\n"
+        )
+        contracts = extractor.find_api_contracts(tmp_path)
+        assert len(contracts) == 1
+        paths = [ep.path for ep in contracts[0].endpoints]
+        assert "/v1/payments" in paths
+
+    def test_fixture_rewards_interface_endpoints_extracted(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """Fixture RewardsController implements RewardsApi; all 3 endpoints are found."""
+        contracts = extractor.find_api_contracts(SAMPLE_BACKEND_JAVA_REPO)
+        assert len(contracts) == 1
+        paths = [ep.path for ep in contracts[0].endpoints]
+        assert "/v1/rewards" in paths
+        assert "/v1/rewards/{rewardId}/redeem" in paths
+        assert "/v1/rewards/{rewardId}" in paths
+
+
+# ---------------------------------------------------------------------------
+# TestVersionCatalog — Fix 5
+# ---------------------------------------------------------------------------
+
+
+class TestVersionCatalog:
+    """Tests for Gradle version catalog (libs.versions.toml) dependency parsing (Fix 5)."""
+
+    def test_version_catalog_module_key_parsed(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Parses module key form from libs.versions.toml."""
+        gradle_dir = tmp_path / "gradle"
+        gradle_dir.mkdir()
+        (gradle_dir / "libs.versions.toml").write_text(
+            "[versions]\n"
+            'cosmos = "5.7.0"\n'
+            "\n"
+            "[libraries]\n"
+            'azure-cosmos = { module = "com.azure.spring:spring-cloud-azure-starter-data-cosmos", version.ref = "cosmos" }\n'
+        )
+        deps: list = []
+        seen: set = set()
+        extractor._parse_version_catalog(gradle_dir / "libs.versions.toml", deps, seen)
+        dep_names = [d.name for d in deps]
+        assert "com.azure.spring:spring-cloud-azure-starter-data-cosmos" in dep_names
+        cosmos_dep = next(d for d in deps if "spring-cloud-azure-starter-data-cosmos" in d.name)
+        assert cosmos_dep.version == "5.7.0"
+        assert cosmos_dep.source == "libs.versions.toml"
+
+    def test_version_catalog_group_name_form(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Parses group + name dict form from libs.versions.toml."""
+        gradle_dir = tmp_path / "gradle"
+        gradle_dir.mkdir()
+        (gradle_dir / "libs.versions.toml").write_text(
+            "[versions]\n"
+            'mapstruct = "1.5.5.Final"\n'
+            "\n"
+            "[libraries]\n"
+            'mapstruct = { group = "org.mapstruct", name = "mapstruct", version.ref = "mapstruct" }\n'
+        )
+        deps: list = []
+        seen: set = set()
+        extractor._parse_version_catalog(gradle_dir / "libs.versions.toml", deps, seen)
+        dep_names = [d.name for d in deps]
+        assert "org.mapstruct:mapstruct" in dep_names
+        ms_dep = next(d for d in deps if d.name == "org.mapstruct:mapstruct")
+        assert ms_dep.version == "1.5.5.Final"
+
+    def test_version_catalog_string_form(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Parses simple string form 'group:artifact:version' from libs.versions.toml."""
+        gradle_dir = tmp_path / "gradle"
+        gradle_dir.mkdir()
+        (gradle_dir / "libs.versions.toml").write_text(
+            "[libraries]\n"
+            'guava = "com.google.guava:guava:32.1.3-jre"\n'
+        )
+        deps: list = []
+        seen: set = set()
+        extractor._parse_version_catalog(gradle_dir / "libs.versions.toml", deps, seen)
+        dep_names = [d.name for d in deps]
+        assert "com.google.guava:guava" in dep_names
+        guava = next(d for d in deps if d.name == "com.google.guava:guava")
+        assert guava.version == "32.1.3-jre"
+
+    def test_version_catalog_deduplication(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Version catalog deps don't duplicate deps already in seen set."""
+        gradle_dir = tmp_path / "gradle"
+        gradle_dir.mkdir()
+        (gradle_dir / "libs.versions.toml").write_text(
+            "[libraries]\n"
+            'guava = "com.google.guava:guava:32.1.3-jre"\n'
+        )
+        deps: list = []
+        seen: set = {"com.google.guava:guava"}  # pre-populated
+        extractor._parse_version_catalog(gradle_dir / "libs.versions.toml", deps, seen)
+        assert len(deps) == 0  # already in seen, not added again
+
+    def test_fixture_version_catalog_deps_included(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """Fixture gradle/libs.versions.toml deps are included in parsed dependencies."""
+        deps = extractor._parse_dependencies(SAMPLE_BACKEND_JAVA_REPO)
+        dep_names = [d.name for d in deps]
+        # From libs.versions.toml: module key form
+        assert "com.azure.spring:spring-cloud-azure-starter-data-cosmos" in dep_names
+        # From libs.versions.toml: group+name form
+        assert "org.mapstruct:mapstruct" in dep_names
+        # From libs.versions.toml: string form
+        assert "com.google.guava:guava" in dep_names
+
+    def test_version_catalog_dep_source_label(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """Version catalog deps have source='libs.versions.toml'."""
+        deps = extractor._parse_dependencies(SAMPLE_BACKEND_JAVA_REPO)
+        cosmos_dep = next(
+            (d for d in deps if "spring-cloud-azure-starter-data-cosmos" in d.name), None
+        )
+        assert cosmos_dep is not None
+        assert cosmos_dep.source == "libs.versions.toml"
+
+
+# ---------------------------------------------------------------------------
+# TestMapNotationDeps — Fix 6
+# ---------------------------------------------------------------------------
+
+
+class TestMapNotationDeps:
+    """Tests for Gradle map-notation dependency parsing (Fix 6)."""
+
+    def test_map_notation_parsed(self, extractor: BackendJavaExtractor) -> None:
+        """Parses implementation group: 'x', name: 'y', version: 'z' syntax."""
+        content = "implementation group: 'com.example', name: 'my-lib', version: '1.0.0'"
+        deps: list = []
+        seen: set = set()
+        extractor._parse_gradle_deps(content, "build.gradle", deps, seen)
+        assert len(deps) == 1
+        assert deps[0].name == "com.example:my-lib"
+        assert deps[0].version == "1.0.0"
+        assert deps[0].category == "runtime"
+
+    def test_map_notation_without_version(self, extractor: BackendJavaExtractor) -> None:
+        """Parses map notation without version field."""
+        content = "implementation group: 'com.example', name: 'my-lib'"
+        deps: list = []
+        seen: set = set()
+        extractor._parse_gradle_deps(content, "build.gradle", deps, seen)
+        assert len(deps) == 1
+        assert deps[0].name == "com.example:my-lib"
+        assert deps[0].version is None
+
+    def test_map_notation_test_config(self, extractor: BackendJavaExtractor) -> None:
+        """Map notation with testImplementation → test category."""
+        content = "testImplementation group: 'org.junit', name: 'junit-api', version: '5.10.0'"
+        deps: list = []
+        seen: set = set()
+        extractor._parse_gradle_deps(content, "build.gradle", deps, seen)
+        assert len(deps) == 1
+        assert deps[0].category == "test"
+
+    def test_map_notation_dedup_with_string_notation(self, extractor: BackendJavaExtractor) -> None:
+        """Map notation dep that already exists in seen is not duplicated."""
+        content = (
+            "implementation 'com.example:my-lib:1.0.0'\n"
+            "implementation group: 'com.example', name: 'my-lib', version: '1.0.0'\n"
+        )
+        deps: list = []
+        seen: set = set()
+        extractor._parse_gradle_deps(content, "build.gradle", deps, seen)
+        # Only one dep: string notation wins (appears first)
+        assert len(deps) == 1
+        assert deps[0].name == "com.example:my-lib"
+
+    def test_fixture_map_notation_dep_included(self, extractor: BackendJavaExtractor) -> None:
+        """Fixture build.gradle map-notation dep is included in parsed dependencies."""
+        deps = extractor._parse_dependencies(SAMPLE_BACKEND_JAVA_REPO)
+        dep_names = [d.name for d in deps]
+        assert "com.example.internal:internal-lib" in dep_names
+        internal = next(d for d in deps if d.name == "com.example.internal:internal-lib")
+        assert internal.version == "1.2.3"

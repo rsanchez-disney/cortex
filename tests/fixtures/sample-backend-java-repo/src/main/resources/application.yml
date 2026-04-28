@@ -21,5 +21,13 @@ kafka:
     order-cancelled: demo.orders.cancelled
     order-shipped: "${ORDER_SHIPPED_TOPIC:demo.orders.shipped}"
 
+spring:
+  cloud:
+    azure:
+      cosmos:
+        endpoint: https://example.documents.azure.com:443/
+        key: ${COSMOS_KEY:dummy-key}
+        database: example-db
+
 server:
   port: 8080

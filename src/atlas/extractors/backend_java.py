@@ -313,10 +313,15 @@ class BackendJavaExtractor(Extractor):
         return raw_version
 
     def _parse_dependencies(self, root: Path, gradle_vars: dict[str, str] | None = None) -> list[Dependency]:
-        """Parse dependencies from build.gradle (Groovy or Kotlin DSL)."""
+        """Parse dependencies from build.gradle (Groovy or Kotlin DSL) and libs.versions.toml."""
         deps: list[Dependency] = []
         seen: set[str] = set()
         vars_map = gradle_vars or {}
+
+        # Parse Gradle version catalog first (provides alias → coordinate mapping)
+        toml_path = root / "gradle" / "libs.versions.toml"
+        if toml_path.exists():
+            self._parse_version_catalog(toml_path, deps, seen)
 
         for gf in root.rglob("build.gradle*"):
             if gf.is_file() and not any(part in _EXCLUDED_DIRS for part in gf.parts):
@@ -324,6 +329,84 @@ class BackendJavaExtractor(Extractor):
                 self._parse_gradle_deps(content, gf.name, deps, seen, vars_map)
 
         return deps
+
+    def _parse_version_catalog(
+        self, toml_path: Path, deps: list[Dependency], seen: set[str]
+    ) -> None:
+        """Parse dependencies from a Gradle version catalog (gradle/libs.versions.toml).
+
+        Handles both dict form (module/group+name keys) and string form
+        (``"group:artifact:version"``). Version refs are resolved from the
+        [versions] table.
+        """
+        try:
+            import tomli
+        except ImportError:
+            logger.warning("tomli not installed, skipping version catalog parsing")
+            return
+
+        try:
+            with open(toml_path, "rb") as f:
+                catalog = tomli.load(f)
+        except Exception as e:
+            logger.warning("Failed to parse libs.versions.toml", path=str(toml_path), error=str(e))
+            return
+
+        versions = catalog.get("versions", {})
+        libraries = catalog.get("libraries", {})
+
+        # Category is always "runtime" here because the TOML itself carries no scope
+        # information — scope (testImplementation, ksp, etc.) is declared in build.gradle
+        # at the point where `libs.xxx` aliases are used, which is not parsed here.
+        for _alias, lib_def in libraries.items():
+            if isinstance(lib_def, str):
+                # Simple string form: "group:artifact:version"
+                parts = lib_def.split(":")
+                if len(parts) >= 2:
+                    name = f"{parts[0]}:{parts[1]}"
+                    if name not in seen:
+                        seen.add(name)
+                        deps.append(
+                            Dependency(
+                                name=name,
+                                version=parts[2] if len(parts) > 2 else None,
+                                source="libs.versions.toml",
+                                direct=True,
+                                category="runtime",
+                            )
+                        )
+            elif isinstance(lib_def, dict):
+                module = lib_def.get("module")
+                group = lib_def.get("group")
+                artifact_name = lib_def.get("name")
+
+                if module:
+                    dep_name = module
+                elif group and artifact_name:
+                    dep_name = f"{group}:{artifact_name}"
+                else:
+                    continue
+
+                version: str | None = None
+                ver_ref = lib_def.get("version")
+                if isinstance(ver_ref, str):
+                    version = ver_ref
+                elif isinstance(ver_ref, dict):
+                    ref = ver_ref.get("ref")
+                    if ref and ref in versions:
+                        version = str(versions[ref])
+
+                if dep_name not in seen:
+                    seen.add(dep_name)
+                    deps.append(
+                        Dependency(
+                            name=dep_name,
+                            version=version,
+                            source="libs.versions.toml",
+                            direct=True,
+                            category="runtime",
+                        )
+                    )
 
     def _parse_gradle_deps(
         self, content: str, source: str, deps: list[Dependency], seen: set[str],
@@ -335,6 +418,7 @@ class BackendJavaExtractor(Extractor):
             implementation 'group:artifact:version'
             implementation("group:artifact:version")
             testImplementation 'group:artifact:version'
+            implementation group: 'x', name: 'y', version: 'z'  (map notation)
 
         Version strings containing Gradle variable references (${varName}) are
         resolved against vars_map when provided.
@@ -342,8 +426,11 @@ class BackendJavaExtractor(Extractor):
         if vars_map is None:
             vars_map = {}
 
-        pattern = rf"""({_ALL_CONFIGS})\s*[\(]?\s*["']([^"']+)["']"""
-        for m in re.finditer(pattern, content):
+        # String notation: implementation 'group:artifact:version'
+        # Negative lookbehind prevents matching config names embedded in artifact names
+        # (e.g. "junit-api" must not be parsed as the "api" configuration keyword).
+        string_pattern = rf"""(?<![a-zA-Z0-9_\-])({_ALL_CONFIGS})\s*[\(]?\s*["']([^"']+)["']"""
+        for m in re.finditer(string_pattern, content):
             config_name = m.group(1)
             dep_str = m.group(2)
             parts = dep_str.split(":")
@@ -364,6 +451,31 @@ class BackendJavaExtractor(Extractor):
                         )
                     )
 
+        # Map notation: implementation group: 'x', name: 'y', version: 'z'
+        map_pattern = re.compile(
+            rf"""(?<![a-zA-Z0-9_\-])({_ALL_CONFIGS})\s+group\s*:\s*['"]([^'"]+)['"]\s*,\s*name\s*:\s*['"]([^'"]+)['"]"""
+            rf"""(?:\s*,\s*version\s*:\s*['"]([^'"]+)['"])?""",
+        )
+        for m in map_pattern.finditer(content):
+            config_name = m.group(1)
+            group = m.group(2)
+            artifact = m.group(3)
+            raw_version = m.group(4)
+            name = f"{group}:{artifact}"
+            if name not in seen:
+                seen.add(name)
+                category = _DEP_CONFIG_CATEGORY.get(config_name)
+                resolved_version = self._resolve_gradle_version(raw_version, vars_map)
+                deps.append(
+                    Dependency(
+                        name=name,
+                        version=resolved_version,
+                        source=source,
+                        direct=True,
+                        category=category,
+                    )
+                )
+
     def _parse_spring_endpoints(self, root: Path) -> list[EndpointIndex]:
         """Extract API endpoints from Spring controller annotations.
 
@@ -382,11 +494,16 @@ class BackendJavaExtractor(Extractor):
         """
         endpoints: list[EndpointIndex] = []
 
-        # Find all Java controller files
+        # Build a single repo-wide index of all Java files (stem → list[Path]) so that
+        # _extract_endpoints_from_implemented_interfaces can resolve interface names without
+        # triggering a separate rglob per interface name.
+        java_file_index: dict[str, list[Path]] = {}
         controller_files: list[Path] = []
         for java_file in root.rglob("*.java"):
             if any(part in _EXCLUDED_DIRS for part in java_file.parts):
                 continue
+            # Add to the flat index (multiple files may share a stem in different packages)
+            java_file_index.setdefault(java_file.stem, []).append(java_file)
             # Check if it's in a controllers/controller directory or has Controller in name
             parts_lower = [p.lower() for p in java_file.parts]
             if any("controller" in p for p in parts_lower) or java_file.stem.endswith(
@@ -406,6 +523,16 @@ class BackendJavaExtractor(Extractor):
                 continue
 
             file_endpoints = self._extract_endpoints_from_controller(content, controller_file)
+
+            # API interface pattern: controller has @RestController but no @*Mapping methods
+            # (only @Override). Look for `implements XxxApi` and extract endpoints from the
+            # interface file instead (e.g. loyalty-microservice pattern).
+            if not file_endpoints and "@RestController" in content:
+                interface_endpoints = self._extract_endpoints_from_implemented_interfaces(
+                    content, controller_file, java_file_index
+                )
+                file_endpoints = interface_endpoints
+
             endpoints.extend(file_endpoints)
 
         # Deduplicate by (method, path) — keep the first occurrence (retains summary/tags)
@@ -482,6 +609,70 @@ class BackendJavaExtractor(Extractor):
 
         return endpoints
 
+    def _extract_endpoints_from_implemented_interfaces(
+        self,
+        controller_content: str,
+        controller_file: Path,
+        java_file_index: dict[str, list[Path]],
+    ) -> list[EndpointIndex]:
+        """Extract endpoints from API interfaces implemented by a @RestController.
+
+        Some projects follow a pattern where route annotations (@RequestMapping,
+        @GetMapping, etc.) are placed on an interface (e.g. ``RedeemRewardsApi``)
+        and the controller only has ``@RestController`` + ``@Override`` methods.
+        In this case, the interface file holds all endpoint metadata.
+
+        Strategy:
+        1. Parse ``implements Foo, Bar`` from the controller class declaration.
+        2. Look up each interface name in ``java_file_index`` (pre-built by the
+           caller — avoids a separate rglob per interface name).
+        3. Extract endpoints from each matching interface file that contains HTTP
+           mapping annotations.
+        """
+        endpoints: list[EndpointIndex] = []
+
+        # Find all interface names from `implements` clause.
+        # Use re.DOTALL so the pattern matches across line breaks (e.g. multi-line
+        # implements clauses) and (?=\s*\{) anchors to the opening brace.
+        impl_m = re.search(
+            r"\bclass\s+\w+(?:\s+extends\s+\w+)?\s+implements\s+([\w,\s<>]+?)(?=\s*\{)",
+            controller_content,
+            re.DOTALL,
+        )
+        if not impl_m:
+            return endpoints
+
+        # Extract individual interface names (strip generics and whitespace)
+        raw_interfaces = impl_m.group(1)
+        interface_names = [
+            re.sub(r"<[^>]*>", "", name).strip()
+            for name in raw_interfaces.split(",")
+            if name.strip()
+        ]
+
+        http_annotation_re = re.compile(
+            r"@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\b"
+        )
+
+        for iface_name in interface_names:
+            if not iface_name:
+                continue
+            # Look up candidates in the pre-built index (O(1) instead of rglob)
+            candidates = java_file_index.get(iface_name, [])
+            for candidate in candidates:
+                try:
+                    iface_content = candidate.read_text(errors="replace")
+                except OSError:
+                    continue
+                # Only process if the interface has HTTP mapping annotations
+                if not http_annotation_re.search(iface_content):
+                    continue
+                iface_endpoints = self._extract_endpoints_from_controller(iface_content, candidate)
+                endpoints.extend(iface_endpoints)
+                break  # Use the first matching file per interface name
+
+        return endpoints
+
     def _extract_request_mapping_path(self, content: str, scope: str = "class") -> str | None:
         """Extract the path from @RequestMapping annotation.
 
@@ -491,7 +682,7 @@ class BackendJavaExtractor(Extractor):
         # Match @RequestMapping("/path") or @RequestMapping(value = "/path")
         # Handle both single and double quotes, and optional 'value ='
         pattern = re.compile(
-            r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']',
+            r'@RequestMapping\s*\(\s*(?:(?:value|path)\s*=\s*)?["\']([^"\']+)["\']',
             re.MULTILINE,
         )
         m = pattern.search(content)
@@ -565,11 +756,13 @@ class BackendJavaExtractor(Extractor):
         return None
 
     def _extract_operation_summary(self, text: str) -> str | None:
-        """Extract @Operation(summary = "...") from text.
+        """Extract @Operation(summary = "...") or @Operation(description = "...") from text.
 
-        Discards summaries that look like URL paths — these are copy-paste noise
-        from codebases that use the summary field as a route reference instead of
-        a human-readable description. Only returns genuine descriptions.
+        Tries ``summary`` first; falls back to ``description`` if summary is absent.
+
+        Discards values that look like URL paths — these are copy-paste noise
+        from codebases that use the summary/description field as a route reference
+        instead of a human-readable description. Only returns genuine descriptions.
 
         Patterns that are discarded:
         - Absolute paths: "/accounts/redeem", "/shopping-cart/tickets"
@@ -579,15 +772,14 @@ class BackendJavaExtractor(Extractor):
         - Single-segment paths: "/status", "/health", "/availability"
         - Query-string URLs: "/accounts/validate?email=..."
         """
-        m = re.search(
-            r'@Operation\s*\(\s*(?:[^)]*?\s)?summary\s*=\s*["\']([^"\']+)["\']',
-            text,
-            re.DOTALL,
+        # Try summary first, then fall back to description
+        raw = self._try_extract_op_attr(text, "summary") or self._try_extract_op_attr(
+            text, "description"
         )
-        if not m:
+        if not raw:
             return None
 
-        summary = m.group(1).strip()
+        summary = raw.strip()
         if not summary:
             return None
 
@@ -620,6 +812,21 @@ class BackendJavaExtractor(Extractor):
             return None
 
         return summary
+
+    def _try_extract_op_attr(self, text: str, attr: str) -> str | None:
+        """Extract a specific attribute from @Operation(...) in text.
+
+        Handles both @Operation(attr = "value") and multi-attribute forms like
+        @Operation(summary = "x", description = "y").
+        """
+        m = re.search(
+            rf'@Operation\s*\(\s*(?:[^)]*?\s)?{re.escape(attr)}\s*=\s*["\']([^"\']+)["\']',
+            text,
+            re.DOTALL,
+        )
+        if m:
+            return m.group(1)
+        return None
 
     def _extract_tag_name(self, text: str, scope: str = "class") -> str | None:
         """Extract @Tag(name = "...") from text."""
@@ -885,6 +1092,13 @@ class BackendJavaExtractor(Extractor):
                     detected.append(db_type)
                 elif re.search(rf"jdbc:{pattern}", content):
                     detected.append(db_type)
+                elif db_type == "cosmos" and re.search(
+                    r"(?:^|\n)\s*cosmos\s*:", content
+                ):
+                    # Cosmos DB configured via spring.cloud.azure.cosmos.* keys.
+                    # Match "cosmos:" as a standalone YAML key (indented on its own line)
+                    # to avoid false positives like "no-cosmos:" or comments.
+                    detected.append(db_type)
 
         # --- Scan build.gradle for database connector dependencies ---
         dep_db_signals = [
@@ -894,7 +1108,7 @@ class BackendJavaExtractor(Extractor):
             (r"com\.microsoft\.sqlserver", "sqlserver"),
             (r"com\.oracle", "oracle"),
             (r"com\.h2database:h2", "h2"),
-            (r"com\.azure:azure-spring-data-cosmos|azure-cosmos", "cosmos"),
+            (r"com\.azure:azure-spring-data-cosmos|spring-cloud-azure-starter-data-cosmos|azure-cosmos", "cosmos"),
             (r"org\.springframework\.data:spring-data-mongodb|de\.flapdoodle", "mongodb"),
             (r"com\.datastax|spring-data-cassandra", "cassandra"),
         ]

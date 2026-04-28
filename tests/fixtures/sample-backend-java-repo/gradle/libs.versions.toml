@@ -1,0 +1,11 @@
+[versions]
+azure-cosmos = "5.7.0"
+mapstruct = "1.5.5.Final"
+
+[libraries]
+# module key form
+azure-spring-cosmos = { module = "com.azure.spring:spring-cloud-azure-starter-data-cosmos", version.ref = "azure-cosmos" }
+# group + name form
+mapstruct = { group = "org.mapstruct", name = "mapstruct", version.ref = "mapstruct" }
+# string form
+guava = "com.google.guava:guava:32.1.3-jre"

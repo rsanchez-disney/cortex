@@ -2,26 +2,70 @@
 # Replace paths/URLs below with your actual local clones or Azure DevOps URLs.
 # For URL entries, set the AZURE_PAT environment variable.
 repos:
-  # - name: my-android-app
-  #   path: /path/to/your/local/clone
-  #   type: android
-  #   owner: team-mobile
-  #   domain: mobile
-  #   tier: standard
-  #   purpose: Main Android app
+  # ---------------------------------------------------------------------------
+  # IntuitDome backend microservices — Java 17 / Spring Boot 3.x / Gradle
+  # ---------------------------------------------------------------------------
 
-  # - name: my-ios-app
-  #   url: https://dev.azure.com/org/project/_git/repo-name
-  #   type: ios
-  #   owner: team-mobile
-  #   domain: mobile
-  #   tier: standard
-  #   purpose: Main iOS app
+  - name: identity-microservice
+    url: https://dev.azure.com/IntuitDome/identity-microservice/_git/identity-microservice
+    type: backend-java
+    owner: team-backend
+    domain: identity
+    tier: critical
+    purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
 
-  # - name: my-java-service
-  #   path: /path/to/your/local/clone
-  #   type: backend-java
-  #   owner: team-backend
-  #   domain: payments
-  #   tier: critical
-  #   purpose: Spring Boot microservice
+  - name: accesscontrol-microservice
+    url: https://dev.azure.com/IntuitDome/accesscontrol-microservice/_git/accesscontrol-microservice
+    type: backend-java
+    owner: team-backend
+    domain: access-control
+    tier: critical
+    purpose: Access validation, parking events, AiFi zone detection
+
+  - name: payments-microservice
+    url: https://dev.azure.com/IntuitDome/payments-microservice/_git/payments-microservice
+    type: backend-java
+    owner: team-backend
+    domain: payments
+    tier: critical
+    purpose: Payment methods, transactions, invoices, chargebacks
+
+  - name: frictionless-commerce-microservice
+    url: https://dev.azure.com/IntuitDome/frictionless-commerce-microservice/_git/frictionless-commerce-microservice
+    type: backend-java
+    owner: team-backend
+    domain: commerce
+    tier: critical
+    purpose: Frictionless checkout sessions, AiFi integration, POS
+
+  - name: loyalty-microservice
+    url: https://dev.azure.com/IntuitDome/loyalty-microservice/_git/loyalty-microservice
+    type: backend-java
+    owner: team-backend
+    domain: loyalty
+    tier: standard
+    purpose: Loyalty points, rewards, achievements, leaderboards, badges
+
+  - name: loyalty-sa-microservice
+    url: https://dev.azure.com/IntuitDome/loyalty-sa-microservice/_git/loyalty-sa-microservice
+    type: backend-java
+    owner: team-backend
+    domain: loyalty
+    tier: standard
+    purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
+
+  - name: entitlements-microservice
+    url: https://dev.azure.com/IntuitDome/entitlements-microservice/_git/entitlements-microservice
+    type: backend-java
+    owner: team-backend
+    domain: entitlements
+    tier: critical
+    purpose: Entitlement assignment, redemption, transfer, expiration
+
+  - name: suites-microservice
+    url: https://dev.azure.com/IntuitDome/suites-microservice/_git/suites-microservice
+    type: backend-java
+    owner: team-backend
+    domain: suites
+    tier: critical
+    purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
