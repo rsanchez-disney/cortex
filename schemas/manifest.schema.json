@@ -12,7 +12,7 @@
     },
     "type": {
       "type": "string",
-      "enum": ["android", "ios", "backend-go", "backend-node", "web-react"]
+      "enum": ["android", "ios", "backend-go", "backend-node", "backend-java", "web-react"]
     },
     "owner": {
       "type": "string"
@@ -211,6 +211,40 @@
         "commit": { "type": "string" }
       },
       "additionalProperties": false
+    },
+    "spring_boot_version": {
+      "type": "string",
+      "description": "Spring Boot version"
+    },
+    "java_version": {
+      "type": "string",
+      "description": "Java source compatibility version"
+    },
+    "framework": {
+      "type": "string",
+      "description": "Backend framework (spring-boot, micronaut, quarkus, etc.)"
+    },
+    "flyway_migration_count": {
+      "type": "integer",
+      "description": "Number of Flyway database migrations"
+    },
+    "kafka_topics": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Kafka topic names referenced in application config"
+    },
+    "database_type": {
+      "type": "string",
+      "description": "Primary database type (postgresql, mysql, cosmos, etc.)"
+    },
+    "secondary_databases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Additional database types detected beyond the primary"
+    },
+    "cache_type": {
+      "type": "string",
+      "description": "Cache technology detected (redis, memcached, caffeine, etc.)"
     }
   },
   "additionalProperties": false

@@ -1,9 +1,10 @@
 # Local development config — supports both local paths and remote URLs.
 # For URL entries, set the AZURE_PAT environment variable.
+# Use repos-fixtures.yaml for smoke tests with sample data.
 repos:
   # Option A: pre-cloned local path (no PAT needed)
   # - name: mobile-banking-android
-  #   path: /Users/juan.saravia/projects/mobile-banking-android
+  #   path: /path/to/your/local/clone
   #   type: android
   #   owner: team-mobile
   #   domain: payments
@@ -12,12 +13,21 @@ repos:
 
   # Option B: remote URL (AZURE_PAT env var must be set)
   # - name: mobile-banking-ios
-  #   url: https://dev.azure.com/org/project/_git/mobile-banking-ios
+  #   url: https://dev.azure.com/org/project/_git/repo-name
   #   type: ios
   #   owner: team-mobile
   #   domain: payments
   #   tier: critical
   #   purpose: Main iOS banking app
+
+  # Option C: backend Java/Spring Boot service (local path)
+  # - name: my-java-service
+  #   path: /path/to/your/local/clone
+  #   type: backend-java
+  #   owner: team-backend
+  #   domain: payments
+  #   tier: critical
+  #   purpose: Spring Boot microservice for payments processing
 
   # Using test fixtures as defaults
   - name: sample-android

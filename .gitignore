@@ -75,6 +75,7 @@ dmypy.json
 
 # Atlas output directories (local dev artifacts)
 atlas-output/
+atlas-output-*/
 /tmp/atlas-smoke/
 
 # Swift Package Manager (iOS fixture build artifacts)

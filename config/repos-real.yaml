@@ -1,37 +1,27 @@
-# Real repo config — points to the actual Android project for local testing.
+# Real repo config — points to actual project clones for local testing.
+# Replace paths/URLs below with your actual local clones or Azure DevOps URLs.
+# For URL entries, set the AZURE_PAT environment variable.
 repos:
-  - name: dmzmovi-maker-lac-android
-    path: /Users/juan.saravia/projects/lac/dmzmovi-maker_lac_android
-    type: android
-    owner: team-mobile
-    domain: mobile
-    tier: standard
-    purpose: LA Clippers fan engagement Android app with ticketing, video maker, loyalty, and wallet features.
-    status: active
-    keywords:
-      - android
-      - clippers
-      - laliga
-      - maker
-      - compose
-      - kotlin
-      - ticketing
-      - loyalty
+  # - name: my-android-app
+  #   path: /path/to/your/local/clone
+  #   type: android
+  #   owner: team-mobile
+  #   domain: mobile
+  #   tier: standard
+  #   purpose: Main Android app
 
-  - name: mobile-apps-ios
-    url: https://dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
-    type: ios
-    owner: team-mobile
-    domain: mobile
-    tier: standard
-    purpose: LA Clippers fan engagement iOS app with ticketing, video maker, loyalty, and wallet features.
-    status: active
-    keywords:
-      - ios
-      - clippers
-      - fanapp
-      - swift
-      - ticketing
-      - loyalty
-    extractor_hints:
-      project_root: App
+  # - name: my-ios-app
+  #   url: https://dev.azure.com/org/project/_git/repo-name
+  #   type: ios
+  #   owner: team-mobile
+  #   domain: mobile
+  #   tier: standard
+  #   purpose: Main iOS app
+
+  # - name: my-java-service
+  #   path: /path/to/your/local/clone
+  #   type: backend-java
+  #   owner: team-backend
+  #   domain: payments
+  #   tier: critical
+  #   purpose: Spring Boot microservice

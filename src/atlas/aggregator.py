@@ -154,4 +154,5 @@ def _manifest_to_graph_entry(manifest: dict) -> GraphEntry:
         permissions=manifest.get("permissions", []),
         gradle_plugins=manifest.get("gradle_plugins", []),
         ci=manifest.get("ci"),
+        framework=manifest.get("framework"),
     )

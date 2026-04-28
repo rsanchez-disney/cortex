@@ -142,6 +142,21 @@ STOP_WORDS = frozenset(
         "these",
         "those",
         "am",
+        # discovery/listing words that carry no signal for keyword matching
+        "get",
+        "list",
+        "show",
+        "find",
+        "fetch",
+        "give",
+        "tell",
+        "project",
+        "projects",
+        "service",
+        "services",
+        "repo",
+        "repos",
+        "available",
     }
 )
 
@@ -177,11 +192,23 @@ class AtlasMCPServer:
 
             tokens = _tokenize(task_description)
             if not tokens:
-                result = {"candidates": []}
+                # No meaningful tokens — return all services (unscored listing query)
+                all_svcs = [
+                    {
+                        "name": svc["name"],
+                        "type": svc["type"],
+                        "domain": svc["domain"],
+                        "purpose": svc["purpose"],
+                        "score": 1.0,
+                        "matched_on": ["all"],
+                    }
+                    for svc in graph.get("services", [])
+                ][:max_results]
+                result = {"candidates": all_svcs}
                 await self._log_query(
                     "find_relevant_services",
                     {"task_description": task_description},
-                    {"num_candidates": 0},
+                    {"num_candidates": len(all_svcs)},
                     start,
                 )
                 return result

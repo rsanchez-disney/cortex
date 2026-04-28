@@ -33,3 +33,17 @@ repos:
     integration_notes:
       - scope: global
         note: "Uses biometric auth for sensitive operations"
+
+  - name: sample-backend-java
+    path: tests/fixtures/sample-backend-java-repo
+    type: backend-java
+    owner: team-backend
+    domain: ticketing
+    tier: standard
+    purpose: Sample Spring Boot microservice for testing backend-java extraction.
+    status: active
+    keywords:
+      - spring-boot
+      - java
+      - kafka
+      - postgresql

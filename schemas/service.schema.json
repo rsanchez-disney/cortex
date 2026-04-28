@@ -13,7 +13,7 @@
     },
     "type": {
       "type": "string",
-      "enum": ["android", "ios", "backend-go", "backend-node", "web-react"],
+      "enum": ["android", "ios", "backend-go", "backend-node", "backend-java", "web-react"],
       "description": "Repository/service type"
     },
     "owner": {

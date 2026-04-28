@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/demo_db
+    username: demo
+    password: secret
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: demo-group
+
+kafka:
+  topics:
+    order-created: demo.orders.created
+    order-cancelled: demo.orders.cancelled
+    order-shipped: "${ORDER_SHIPPED_TOPIC:demo.orders.shipped}"
+
+server:
+  port: 8080

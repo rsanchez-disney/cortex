@@ -23,11 +23,13 @@ def get_extractor(service_type: str) -> Extractor:
     """
     # Lazy imports to avoid circular dependencies
     from atlas.extractors.android import AndroidExtractor
+    from atlas.extractors.backend_java import BackendJavaExtractor
     from atlas.extractors.ios import IOSExtractor
 
     registry: dict[str, type[Extractor]] = {
         "android": AndroidExtractor,
         "ios": IOSExtractor,
+        "backend-java": BackendJavaExtractor,
         # "backend-go": BackendGoExtractor,  # deferred — no access to microservices
     }
 

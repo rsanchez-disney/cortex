@@ -43,7 +43,7 @@ class ServiceYaml(BaseModel):
     name: str = Field(
         pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", description="Unique identifier, kebab-case"
     )
-    type: Literal["android", "ios", "backend-go", "backend-node", "web-react"]
+    type: Literal["android", "ios", "backend-go", "backend-node", "backend-java", "web-react"]
     owner: str
     domain: str
     tier: Literal["critical", "standard", "experimental", "deprecated"]
@@ -144,7 +144,7 @@ class ServiceManifest(BaseModel):
     """The full normalized extractor output — written to services/{name}/manifest.json."""
 
     name: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
-    type: Literal["android", "ios", "backend-go", "backend-node", "web-react"]
+    type: Literal["android", "ios", "backend-go", "backend-node", "backend-java", "web-react"]
     owner: str
     domain: str
     tier: Literal["critical", "standard", "experimental", "deprecated"]
@@ -170,6 +170,16 @@ class ServiceManifest(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     gradle_plugins: list[str] = Field(default_factory=list)
     build_variants: list[str] = Field(default_factory=list)
+
+    # Backend-Java-specific fields (None for non-Java types)
+    spring_boot_version: str | None = None
+    java_version: str | None = None
+    framework: str | None = None  # "spring-boot", "micronaut", "quarkus", etc.
+    flyway_migration_count: int | None = None
+    kafka_topics: list[str] = Field(default_factory=list)
+    database_type: str | None = None  # "postgresql", "mysql", "cosmos", etc.
+    secondary_databases: list[str] = Field(default_factory=list)  # additional detected DBs
+    cache_type: str | None = None  # "redis", "memcached", "caffeine", etc.
 
     dependencies: list[Dependency] = Field(default_factory=list)
     entry_points: list[EntryPoint] = Field(default_factory=list)
@@ -218,6 +228,7 @@ class GraphEntry(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     gradle_plugins: list[str] = Field(default_factory=list)
     ci: str | None = None
+    framework: str | None = None
 
 
 class GraphMetadata(BaseModel):
