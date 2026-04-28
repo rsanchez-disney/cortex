@@ -81,6 +81,9 @@ atlas-output-*/
 # Swift Package Manager (iOS fixture build artifacts)
 tests/fixtures/sample-ios-repo/.build/
 
+# Kilo tooling (plans, node_modules, etc.)
+.kilo/
+
 # Secrets / credentials
 *.pem
 *.key
