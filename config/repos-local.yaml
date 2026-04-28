@@ -1,0 +1,55 @@
+# Local development config — supports both local paths and remote URLs.
+# For URL entries, set the AZURE_PAT environment variable.
+repos:
+  # Option A: pre-cloned local path (no PAT needed)
+  # - name: mobile-banking-android
+  #   path: /Users/juan.saravia/projects/mobile-banking-android
+  #   type: android
+  #   owner: team-mobile
+  #   domain: payments
+  #   tier: critical
+  #   purpose: Main Android banking app
+
+  # Option B: remote URL (AZURE_PAT env var must be set)
+  # - name: mobile-banking-ios
+  #   url: https://dev.azure.com/org/project/_git/mobile-banking-ios
+  #   type: ios
+  #   owner: team-mobile
+  #   domain: payments
+  #   tier: critical
+  #   purpose: Main iOS banking app
+
+  # Using test fixtures as defaults
+  - name: sample-android
+    path: tests/fixtures/sample-android-repo
+    type: android
+    owner: team-mobile
+    domain: mobile
+    tier: standard
+    purpose: Sample Android app for testing the extractor.
+    status: active
+    slack: "#team-mobile"
+    keywords:
+      - banking
+      - android
+      - mobile
+    integration_notes:
+      - scope: global
+        note: "Uses custom auth flow via AuthManager"
+
+  - name: sample-ios
+    path: tests/fixtures/sample-ios-repo
+    type: ios
+    owner: team-mobile
+    domain: mobile
+    tier: standard
+    purpose: Sample iOS app for testing the extractor.
+    status: active
+    slack: "#team-mobile"
+    keywords:
+      - banking
+      - ios
+      - mobile
+    integration_notes:
+      - scope: global
+        note: "Uses biometric auth for sensitive operations"

@@ -1,0 +1,37 @@
+# Real repo config — points to the actual Android project for local testing.
+repos:
+  - name: dmzmovi-maker-lac-android
+    path: /Users/juan.saravia/projects/lac/dmzmovi-maker_lac_android
+    type: android
+    owner: team-mobile
+    domain: mobile
+    tier: standard
+    purpose: LA Clippers fan engagement Android app with ticketing, video maker, loyalty, and wallet features.
+    status: active
+    keywords:
+      - android
+      - clippers
+      - laliga
+      - maker
+      - compose
+      - kotlin
+      - ticketing
+      - loyalty
+
+  - name: mobile-apps-ios
+    url: https://dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
+    type: ios
+    owner: team-mobile
+    domain: mobile
+    tier: standard
+    purpose: LA Clippers fan engagement iOS app with ticketing, video maker, loyalty, and wallet features.
+    status: active
+    keywords:
+      - ios
+      - clippers
+      - fanapp
+      - swift
+      - ticketing
+      - loyalty
+    extractor_hints:
+      project_root: App

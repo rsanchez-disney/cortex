@@ -1,0 +1,112 @@
+# Platform Atlas — Nightly extraction pipeline
+# Runs extraction across all registered repos, aggregates into graph, reports.
+
+schedules:
+  - cron: "0 3 * * *"           # 3am daily, UTC
+    displayName: Nightly extraction
+    branches:
+      include: [main]
+    always: true
+
+trigger: none                    # Do not run on commits to this repo
+pr: none
+
+parameters:
+  - name: repoFilter
+    displayName: Only extract one repo (leave blank for all)
+    type: string
+    default: ''
+  - name: forceRefresh
+    displayName: Force full refresh
+    type: boolean
+    default: false
+
+variables:
+  - group: platform-atlas-secrets    # Key Vault: GIT_PAT, STORAGE_CREDENTIALS
+  - name: STORAGE_BACKEND
+    value: gcs
+  - name: STORAGE_BUCKET
+    value: platform-atlas-prod
+
+jobs:
+  - job: extract
+    displayName: Extract per repo
+    strategy:
+      matrix:
+        # NOTE: Generate this matrix programmatically from config/repos.yaml.
+        # Azure DevOps supports template expressions for this.
+        # Below are placeholder entries — replace with actual repos.
+        mobile_banking_android:
+          repoName: mobile-banking-android
+          repoUrl: https://dev.azure.com/org/project/_git/mobile-banking-android
+        mobile_banking_ios:
+          repoName: mobile-banking-ios
+          repoUrl: https://dev.azure.com/org/project/_git/mobile-banking-ios
+      maxParallel: 6
+
+    steps:
+      - checkout: self
+
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.12'
+        displayName: Use Python 3.12
+
+      - script: |
+          pip install uv
+          uv sync
+        displayName: Install dependencies
+
+      - script: |
+          git clone --depth 1 $(repoUrl) /tmp/target
+        displayName: 'Clone $(repoName)'
+        env:
+          GIT_ASKPASS: /bin/echo
+          GIT_USERNAME: $(GIT_USERNAME)
+          GIT_PASSWORD: $(GIT_PAT)     # From Key Vault via variable group
+
+      - script: |
+          uv run atlas extract \
+            --repo-path /tmp/target \
+            --repo-name $(repoName) \
+            --storage-backend $(STORAGE_BACKEND) \
+            --storage-bucket $(STORAGE_BUCKET)
+        displayName: Extract $(repoName)
+
+  - job: aggregate
+    dependsOn: extract
+    condition: succeededOrFailed()    # Run even if some extractions failed
+    steps:
+      - checkout: self
+
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.12'
+
+      - script: pip install uv && uv sync
+        displayName: Install dependencies
+
+      - script: |
+          uv run atlas aggregate \
+            --storage-backend $(STORAGE_BACKEND) \
+            --storage-bucket $(STORAGE_BUCKET)
+        displayName: Aggregate into graph
+
+  - job: notify
+    dependsOn: [extract, aggregate]
+    condition: succeededOrFailed()
+    steps:
+      - checkout: self
+
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.12'
+
+      - script: pip install uv && uv sync
+        displayName: Install dependencies
+
+      - script: |
+          uv run atlas report \
+            --storage-backend $(STORAGE_BACKEND) \
+            --storage-bucket $(STORAGE_BUCKET)
+        displayName: Report summary

@@ -1,0 +1,15 @@
+name: sample-android
+type: android
+owner: team-mobile
+domain: mobile
+tier: standard
+purpose: Sample Android app for testing the extractor.
+status: active
+slack: "#team-mobile"
+keywords:
+  - banking
+  - android
+  - mobile
+integration_notes:
+  - scope: global
+    note: "Uses custom auth flow via AuthManager"

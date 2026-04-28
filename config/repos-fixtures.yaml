@@ -1,0 +1,35 @@
+# Config pointing at test fixtures — for quick smoke tests, no PAT needed.
+repos:
+  - name: sample-android
+    path: tests/fixtures/sample-android-repo
+    type: android
+    owner: team-mobile
+    domain: mobile
+    tier: standard
+    purpose: Sample Android app for testing the extractor.
+    status: active
+    slack: "#team-mobile"
+    keywords:
+      - banking
+      - android
+      - mobile
+    integration_notes:
+      - scope: global
+        note: "Uses custom auth flow via AuthManager"
+
+  - name: sample-ios
+    path: tests/fixtures/sample-ios-repo
+    type: ios
+    owner: team-mobile
+    domain: mobile
+    tier: standard
+    purpose: Sample iOS app for testing the extractor.
+    status: active
+    slack: "#team-mobile"
+    keywords:
+      - banking
+      - ios
+      - mobile
+    integration_notes:
+      - scope: global
+        note: "Uses biometric auth for sensitive operations"

@@ -1,0 +1,15 @@
+name: sample-ios
+type: ios
+owner: team-mobile
+domain: mobile
+tier: standard
+purpose: Sample iOS app for testing the extractor.
+status: active
+slack: "#team-mobile"
+keywords:
+  - banking
+  - ios
+  - mobile
+integration_notes:
+  - scope: global
+    note: "Uses biometric auth for sensitive operations"

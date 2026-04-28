@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://platform-atlas/schemas/service.schema.json",
+  "title": "Service YAML Schema",
+  "description": "Schema for service.yaml — the human-authored input to the extractor.",
+  "type": "object",
+  "required": ["name", "type", "owner", "domain", "tier", "purpose"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Unique identifier, kebab-case"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["android", "ios", "backend-go", "backend-node", "web-react"],
+      "description": "Repository/service type"
+    },
+    "owner": {
+      "type": "string",
+      "description": "Team or squad name"
+    },
+    "domain": {
+      "type": "string",
+      "description": "High-level functional area (payments, identity, etc.)"
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["critical", "standard", "experimental", "deprecated"],
+      "description": "Service tier"
+    },
+    "purpose": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "One to three sentences describing the service"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "deprecated", "archived"],
+      "default": "active",
+      "description": "Service status"
+    },
+    "slack": {
+      "type": "string",
+      "description": "Slack channel"
+    },
+    "runbook": {
+      "type": "string",
+      "format": "uri",
+      "description": "Runbook URL"
+    },
+    "jira_component": {
+      "type": "string",
+      "description": "JIRA component identifier"
+    },
+    "keywords": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 10,
+      "description": "Free-form terms to boost retrieval"
+    },
+    "integration_notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scope", "note"],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "description": "'global' or an endpoint like 'POST /v1/transfers'"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Integration note text"
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 20,
+      "description": "Notes for consuming agents"
+    },
+    "extractor_hints": {
+      "type": "object",
+      "properties": {
+        "project_root": {
+          "type": "string",
+          "description": "Subdirectory containing the actual project (for nested layouts)"
+        },
+        "additional_docs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extra markdown files worth indexing"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

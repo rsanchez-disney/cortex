@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://platform-atlas/schemas/manifest.schema.json",
+  "title": "Service Manifest Schema",
+  "description": "Schema for the normalized per-service manifest output by the extractor.",
+  "type": "object",
+  "required": ["name", "type", "owner", "domain", "tier", "purpose", "extracted_at", "extractor_version"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["android", "ios", "backend-go", "backend-node", "web-react"]
+    },
+    "owner": {
+      "type": "string"
+    },
+    "domain": {
+      "type": "string"
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["critical", "standard", "experimental", "deprecated"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "deprecated", "archived"],
+      "default": "active"
+    },
+    "purpose": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "keywords": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 10
+    },
+    "language": {
+      "type": "string",
+      "description": "Primary programming language"
+    },
+    "language_version": {
+      "type": "string",
+      "description": "Language version (e.g., '1.22', '5.9', '2.1.10')"
+    },
+    "slack": {
+      "type": "string"
+    },
+    "runbook": {
+      "type": "string",
+      "format": "uri"
+    },
+    "jira_component": {
+      "type": "string"
+    },
+    "application_id": {
+      "type": "string",
+      "description": "Android applicationId (package name)"
+    },
+    "min_sdk": {
+      "type": "string",
+      "description": "Android minSdkVersion"
+    },
+    "target_sdk": {
+      "type": "string",
+      "description": "Android targetSdkVersion"
+    },
+    "compile_sdk": {
+      "type": "string",
+      "description": "Android compileSdkVersion"
+    },
+    "android_gradle_plugin": {
+      "type": "string",
+      "description": "Android Gradle Plugin (AGP) version"
+    },
+    "modules": {
+      "type": "array",
+      "description": "Gradle modules with their type and inter-module dependencies",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["application", "library", "kmp", "unknown"]
+          },
+          "dependencies": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "description": "Android permissions declared in AndroidManifest.xml",
+      "items": { "type": "string" }
+    },
+    "gradle_plugins": {
+      "type": "array",
+      "description": "Gradle plugin IDs declared in the version catalog",
+      "items": { "type": "string" }
+    },
+    "build_variants": {
+      "type": "array",
+      "description": "Product flavor names (build variants)",
+      "items": { "type": "string" }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "source": { "type": "string" },
+          "direct": { "type": "boolean" },
+          "category": {
+            "type": "string",
+            "description": "Dependency category: runtime, test, build, debug",
+            "enum": ["runtime", "test", "build", "debug"]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "entry_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": { "type": "string" },
+          "ref": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "api_contracts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": { "type": "string" },
+          "version": { "type": "string" },
+          "path": { "type": "string" },
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "method": { "type": "string" },
+                "path": { "type": "string" },
+                "summary": { "type": "string" },
+                "tags": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "operation_id": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "docker": { "type": "boolean" },
+        "k8s_manifests": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ci": {
+      "type": "string",
+      "description": "CI system detected (e.g., 'github-actions', 'azure-pipelines')"
+    },
+    "integration_notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scope", "note"],
+        "properties": {
+          "scope": { "type": "string" },
+          "note": { "type": "string", "maxLength": 200 }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 20
+    },
+    "extracted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "extractor_version": {
+      "type": "string"
+    },
+    "source_repo": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string" },
+        "commit": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,30 @@
+# Central list of repos for Azure DevOps pipeline extraction.
+# Each entry has a URL (cloned in the pipeline via GIT_PAT).
+# All service metadata is inline — no service.yaml in target repos is required.
+repos:
+  - name: mobile-banking-android
+    url: https://dev.azure.com/org/project/_git/mobile-banking-android
+    type: android
+    owner: team-mobile
+    domain: payments
+    tier: critical
+    purpose: Main Android banking application.
+    status: active
+    slack: "#team-mobile"
+    keywords:
+      - banking
+      - android
+
+  - name: mobile-banking-ios
+    url: https://dev.azure.com/org/project/_git/mobile-banking-ios
+    type: ios
+    owner: team-mobile
+    domain: payments
+    tier: critical
+    purpose: Main iOS banking application.
+    status: active
+    slack: "#team-mobile"
+    keywords:
+      - banking
+      - ios
+  # Add more repos here
