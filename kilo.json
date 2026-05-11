@@ -15,7 +15,7 @@
         "--storage-backend",
         "local",
         "--storage-bucket",
-        "/tmp/atlas-mcp-test"
+        "./atlas-output"
       ],
       "enabled": true
     }
