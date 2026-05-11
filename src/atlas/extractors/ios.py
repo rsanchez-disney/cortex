@@ -185,7 +185,12 @@ class IOSExtractor(Extractor):
         env_labels = {"dev", "stg", "qa", "uat", "test", "debug", "release", "prod"}
         candidates: dict[str, bool] = {}  # bundle_id -> has_prod_plist
 
-        target_lower = target_hint.lower() if target_hint else None
+        # When target_hint is set, derive keywords to match against bundle ID segments.
+        # e.g. "LACStaff" → ["lacstaff", "staff"] so it matches "com.laclippers.staffapp"
+        # via the "staff" keyword.
+        bundle_keywords: list[str] | None = (
+            self._bundle_id_keywords(target_hint) if target_hint else None
+        )
 
         for plist_path in root.rglob("Configuration-*.plist"):
             stem = plist_path.stem  # e.g. "Configuration-com.laclippers.fanapp.dev"
@@ -202,8 +207,8 @@ class IOSExtractor(Extractor):
                 has_prod = True
             if "." in candidate:
                 # When target_hint is set, filter to plists whose bundle ID contains
-                # the target name (e.g. "fanapp" in "com.laclippers.fanapp")
-                if target_lower and target_lower not in candidate.lower():
+                # at least one of the target keywords (e.g. "staff" in "com.laclippers.staffapp")
+                if bundle_keywords and not any(kw in candidate.lower() for kw in bundle_keywords):
                     continue
                 existing = candidates.get(candidate, False)
                 candidates[candidate] = existing or has_prod
@@ -625,6 +630,29 @@ class IOSExtractor(Extractor):
                 continue
         return sorted(set(configs))
 
+    def _bundle_id_keywords(self, target_hint: str) -> list[str]:
+        """Derive bundle-ID match keywords from a target directory name.
+
+        Bundle IDs often use an abbreviated or suffix-only form of the target name.
+        For example:
+          - "LaClippers" → ["laclippers", "clippers", "fanapp"]  (no, just camel-split)
+          - "LACStaff"   → ["lacstaff", "staff"]
+          - "FanApp"     → ["fanapp", "fan"]
+
+        Strategy: return the full lowercased name plus each camelCase component
+        longer than 3 characters so that any one of them is sufficient to identify
+        the correct bundle ID segment.
+        """
+        name = target_hint
+        keywords = [name.lower()]
+        # Split on camelCase boundaries
+        parts = re.findall(r"[A-Z][a-z0-9]*|[a-z0-9]+", name)
+        for part in parts:
+            kw = part.lower()
+            if len(kw) > 3 and kw not in keywords:
+                keywords.append(kw)
+        return keywords
+
     def _resolve_target_dir(self, root: Path, target_hint: str) -> Path | None:
         """Resolve the source directory for a given target name.
 
@@ -656,7 +684,7 @@ class IOSExtractor(Extractor):
 
         When target_hint is provided, only the matching target directory is scanned.
         """
-        _GENERIC = {"Common", "Component", "Data", "UIComponent", "Sources", "HomeView"}
+        _GENERIC = {"Common", "Component", "Data", "UIComponent", "Sources"}
         domains: list[str] = []
         seen: set[str] = set()
 
@@ -730,7 +758,9 @@ class IOSExtractor(Extractor):
         notes: list[dict] = []
         seen_urls: set[str] = set()
 
-        target_lower = target_hint.lower() if target_hint else None
+        bundle_keywords: list[str] | None = (
+            self._bundle_id_keywords(target_hint) if target_hint else None
+        )
         env_labels = {"dev", "stg", "qa", "uat", "test", "debug", "release", "prod"}
         for plist_path in sorted(root.rglob("Configuration-*.plist")):
             # Derive env label from filename: Configuration-com.bundle.id.env.plist
@@ -738,7 +768,7 @@ class IOSExtractor(Extractor):
             inner = stem[len("Configuration-"):]
 
             # When target_hint is set, skip plists that don't match this target
-            if target_lower and target_lower not in inner.lower():
+            if bundle_keywords and not any(kw in inner.lower() for kw in bundle_keywords):
                 continue
 
             last = inner.split(".")[-1].lower()
