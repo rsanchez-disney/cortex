@@ -39,9 +39,11 @@ jobs:
         mobile_banking_android:
           repoName: mobile-banking-android
           repoUrl: https://dev.azure.com/org/project/_git/mobile-banking-android
+          repoBranch: ''           # empty = default branch
         mobile_banking_ios:
           repoName: mobile-banking-ios
           repoUrl: https://dev.azure.com/org/project/_git/mobile-banking-ios
+          repoBranch: ''           # empty = default branch
       maxParallel: 6
 
     steps:
@@ -58,7 +60,11 @@ jobs:
         displayName: Install dependencies
 
       - script: |
-          git clone --depth 1 $(repoUrl) /tmp/target
+          BRANCH_FLAG=""
+          if [ -n "$(repoBranch)" ]; then
+            BRANCH_FLAG="--branch $(repoBranch)"
+          fi
+          git clone --depth 1 $BRANCH_FLAG $(repoUrl) /tmp/target
         displayName: 'Clone $(repoName)'
         env:
           GIT_ASKPASS: /bin/echo

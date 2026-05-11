@@ -20,7 +20,17 @@ repos:
   #   tier: critical
   #   purpose: Main iOS banking app
 
-  # Option C: backend Java/Spring Boot service (local path)
+  # Option C: remote URL on a specific branch (AZURE_PAT env var must be set)
+  # - name: my-app-staging
+  #   url: https://dev.azure.com/org/project/_git/my-app
+  #   branch: develop          # optional — omit to clone the default branch
+  #   type: android
+  #   owner: team-mobile
+  #   domain: payments
+  #   tier: standard
+  #   purpose: Staging Android app on the develop branch
+
+  # Option E: backend Java/Spring Boot service (local path)
   # - name: my-java-service
   #   path: /path/to/your/local/clone
   #   type: backend-java

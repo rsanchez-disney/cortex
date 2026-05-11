@@ -34,7 +34,7 @@ app = typer.Typer(
 )
 
 # Fields that are config-only (not ServiceYaml fields)
-_CONFIG_ONLY_FIELDS = {"name", "path", "url"}
+_CONFIG_ONLY_FIELDS = {"path", "url", "branch"}
 
 # Required ServiceYaml fields that must be present in config entries
 _REQUIRED_SERVICE_FIELDS = {"type", "owner", "domain", "tier", "purpose"}
@@ -260,7 +260,7 @@ def run_local(
                 effective_path = resolved_path
             elif url:
                 # Clone from URL using AZURE_PAT
-                effective_path, clone_dir = _clone_repo(name, url)
+                effective_path, clone_dir = _clone_repo(name, url, branch=repo.get("branch"))
             else:
                 raise ValueError(f"Repo '{name}' must have either 'path' or 'url'")
 
@@ -320,12 +320,12 @@ def run_local(
 def _extract_service_data(repo: dict) -> dict:
     """Extract ServiceYaml-relevant fields from a repo config entry.
 
-    Strips config-only keys (name, path, url) and returns the service metadata dict.
+    Strips config-only keys (path, url, branch) and returns the service metadata dict.
     The 'name' field is kept since ServiceYaml also requires it.
     """
     service_data = {}
     for key, value in repo.items():
-        if key not in ("path", "url"):
+        if key not in _CONFIG_ONLY_FIELDS:
             service_data[key] = value
     return service_data
 
@@ -361,8 +361,14 @@ def _load_repos_config(config_path: Path) -> list[dict]:
     return repos
 
 
-def _clone_repo(name: str, url: str) -> tuple[Path, str]:
+def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, str]:
     """Clone a repo from URL using AZURE_PAT.
+
+    Args:
+        name: Repo name (used for temp dir prefix and clone subdirectory).
+        url: Remote URL to clone from.
+        branch: Optional branch name. When set, passes ``--branch <branch>`` to
+            ``git clone``. When ``None`` (default), clones the repo's default branch.
 
     Returns:
         Tuple of (repo_path, temp_dir_path) for cleanup.
@@ -392,9 +398,14 @@ def _clone_repo(name: str, url: str) -> tuple[Path, str]:
         # Generic git URL — use PAT as password
         auth_url = url.replace("https://", f"https://pat:{azure_pat}@")
 
+    clone_cmd = ["git", "clone", "--depth", "1"]
+    if branch:
+        clone_cmd.extend(["--branch", branch])
+    clone_cmd.extend([auth_url, str(clone_path)])
+
     try:
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", auth_url, str(clone_path)],
+            clone_cmd,
             capture_output=True,
             text=True,
             timeout=120,

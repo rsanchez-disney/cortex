@@ -136,11 +136,21 @@ repos:
     domain: payments
     tier: critical
     purpose: Main iOS banking app
+
+  # Remote URL on a specific branch
+  - name: my-android-staging
+    url: https://dev.azure.com/org/project/_git/my-android-app
+    branch: develop          # optional — omit to clone the default branch
+    type: android
+    owner: team-mobile
+    domain: payments
+    tier: standard
+    purpose: Staging Android app on the develop branch
 ```
 
 - Each entry must have `path` OR `url`, never both.
 - Required fields per entry: `name`, `path`/`url`, `type`, `owner`, `domain`, `tier`, `purpose`.
-- Optional fields: `status`, `slack`, `runbook`, `jira_component`, `keywords`, `integration_notes`, `extractor_hints`.
+- Optional fields: `status`, `slack`, `runbook`, `jira_component`, `keywords`, `integration_notes`, `extractor_hints`, `branch`.
 - For `url` entries: reads `AZURE_PAT` from environment, shallow-clones to a temp dir, extracts, then cleans up.
 - If `AZURE_PAT` is missing and a `url` entry is encountered → immediate failure with clear message.
 
