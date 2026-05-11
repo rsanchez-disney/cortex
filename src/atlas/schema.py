@@ -35,6 +35,15 @@ class ExtractorHints(BaseModel):
     additional_docs: list[str] | None = Field(
         default=None, description="Extra markdown files worth indexing"
     )
+    target: str | None = Field(
+        default=None,
+        description=(
+            "Xcode target name to scope extraction to (for monorepos with multiple apps "
+            "in a single .xcodeproj). When set, the iOS extractor restricts bundle ID, "
+            "entitlements, feature domains, and build configs to files associated with "
+            "this target's source directory."
+        ),
+    )
 
 
 class ServiceYaml(BaseModel):

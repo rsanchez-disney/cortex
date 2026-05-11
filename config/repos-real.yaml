@@ -2,6 +2,53 @@
 # Replace paths/URLs below with your actual local clones or Azure DevOps URLs.
 # For URL entries, set the AZURE_PAT environment variable.
 repos:
+
+  - name: mobile-apps-android
+    url: https://IntuitDome@dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-android
+    type: android
+    owner: team-mobile
+    domain: entertainment
+    tier: critical
+    purpose: Main Android LA Clippers application.
+
+  # The iOS repo contains a single Xcode project (App/LaLiga.xcodeproj) with two
+  # app targets: LaClippers (FanApp) and LACStaff (StaffApp). We configure them as
+  # separate Atlas services using extractor_hints.project_root + extractor_hints.target
+  # so each gets its own scoped manifest.
+
+  - name: fan-app-ios
+    url: https://IntuitDome@dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
+    type: ios
+    owner: team-mobile
+    domain: entertainment
+    tier: critical
+    purpose: LA Clippers FanApp — fan-facing iOS application for ticketing, loyalty, payments, suite management and arena experiences.
+    keywords:
+      - ios
+      - fanapp
+      - clippers
+      - ticketing
+      - loyalty
+    extractor_hints:
+      project_root: "App"
+      target: "LaClippers"
+
+  - name: staff-app-ios
+    url: https://IntuitDome@dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
+    type: ios
+    owner: team-mobile
+    domain: entertainment
+    tier: critical
+    purpose: LA Clippers StaffApp — internal iOS application for staff and operations personnel at Intuit Dome.
+    keywords:
+      - ios
+      - staffapp
+      - clippers
+      - operations
+    extractor_hints:
+      project_root: "App"
+      target: "LACStaff"
+
   # ---------------------------------------------------------------------------
   # IntuitDome backend microservices — Java 17 / Spring Boot 3.x / Gradle
   # ---------------------------------------------------------------------------
@@ -69,3 +116,11 @@ repos:
     domain: suites
     tier: critical
     purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
+
+  - name: ticketing-microservice
+    url: https://dev.azure.com/IntuitDome/_git/ticketing-microservice
+    type: backend-java
+    owner: team-backend
+    domain: ticketing
+    tier: critical
+    purpose: Ticketing management, seat inventory, reservations, event access

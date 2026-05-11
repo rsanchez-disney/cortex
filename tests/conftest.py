@@ -9,6 +9,7 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 SAMPLE_ANDROID_REPO = FIXTURES_DIR / "sample-android-repo"
 SAMPLE_IOS_REPO = FIXTURES_DIR / "sample-ios-repo"
+SAMPLE_IOS_MULTITARGET_REPO = FIXTURES_DIR / "sample-ios-multitarget-repo"
 SAMPLE_BACKEND_JAVA_REPO = FIXTURES_DIR / "sample-backend-java-repo"
 
 

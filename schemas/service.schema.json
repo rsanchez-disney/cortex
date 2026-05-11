@@ -91,6 +91,10 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Extra markdown files worth indexing"
+        },
+        "target": {
+          "type": "string",
+          "description": "Xcode target name to scope extraction to (for monorepos with multiple apps in a single .xcodeproj). When set, the iOS extractor restricts bundle ID, entitlements, feature domains, and build configs to files associated with this target's source directory."
         }
       },
       "additionalProperties": false

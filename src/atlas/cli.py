@@ -380,11 +380,14 @@ def _clone_repo(name: str, url: str) -> tuple[Path, str]:
     clone_dir = tempfile.mkdtemp(prefix=f"atlas-clone-{name}-")
     clone_path = Path(clone_dir) / name
 
-    # Inject PAT into URL for Azure DevOps
-    # https://dev.azure.com/org/project/_git/repo
-    # becomes: https://{pat}@dev.azure.com/org/project/_git/repo
+    # Inject PAT into URL for Azure DevOps.
+    # Strip any existing "user@" from the URL before injecting the PAT, so that
+    # URLs like https://IntuitDome@dev.azure.com/... don't produce a double-@ URL.
+    # Result: https://{pat}@dev.azure.com/org/project/_git/repo
     if "dev.azure.com" in url:
-        auth_url = url.replace("https://", f"https://{azure_pat}@")
+        import re
+        clean_url = re.sub(r"https://[^@]+@", "https://", url)
+        auth_url = clean_url.replace("https://", f"https://{azure_pat}@")
     else:
         # Generic git URL — use PAT as password
         auth_url = url.replace("https://", f"https://pat:{azure_pat}@")
@@ -395,6 +398,7 @@ def _clone_repo(name: str, url: str) -> tuple[Path, str]:
             capture_output=True,
             text=True,
             timeout=120,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
         if result.returncode != 0:
             raise RuntimeError(f"git clone failed for '{name}': {result.stderr.strip()}")

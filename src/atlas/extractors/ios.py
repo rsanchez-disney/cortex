@@ -50,16 +50,24 @@ class IOSExtractor(Extractor):
         if service_yaml.extractor_hints and service_yaml.extractor_hints.project_root:
             effective_root = repo_path / service_yaml.extractor_hints.project_root
 
+        # Resolve target hint — used to scope extraction in monorepos where a single
+        # .xcodeproj contains multiple app targets (e.g. FanApp + StaffApp).
+        target_hint: str | None = (
+            service_yaml.extractor_hints.target
+            if service_yaml.extractor_hints
+            else None
+        )
+
         language = self._detect_language(effective_root)
         swift_version = self._detect_swift_version(effective_root)
-        bundle_id = self._find_bundle_id(effective_root)
+        bundle_id = self._find_bundle_id(effective_root, target_hint=target_hint)
         deployment_target = self._find_deployment_target(effective_root)
         dependencies = self._parse_dependencies(effective_root)
         modules = self._parse_local_packages(effective_root)
-        targets = self._parse_targets(effective_root)
-        build_variants = self._parse_build_configurations(effective_root)
-        entitlements = self._parse_entitlements(effective_root)
-        integration_notes = self._extract_env_urls(effective_root)
+        targets = self._parse_targets(effective_root, target_hint=target_hint)
+        build_variants = self._parse_build_configurations(effective_root, target_hint=target_hint)
+        entitlements = self._parse_entitlements(effective_root, target_hint=target_hint)
+        integration_notes = self._extract_env_urls(effective_root, target_hint=target_hint)
         ci = self._detect_ci(repo_path)
         api_contracts = self.find_api_contracts(effective_root)
 
@@ -67,7 +75,7 @@ class IOSExtractor(Extractor):
         entry_points: list[EntryPoint] = []
         for target in targets:
             entry_points.append(EntryPoint(kind="target", ref=target))
-        for domain in self._parse_feature_domains(effective_root):
+        for domain in self._parse_feature_domains(effective_root, target_hint=target_hint):
             entry_points.append(EntryPoint(kind="feature", ref=domain))
 
         # Merge config-level integration notes with extracted env URL notes
@@ -163,14 +171,21 @@ class IOSExtractor(Extractor):
                     continue
         return None
 
-    def _find_bundle_id(self, root: Path) -> str | None:
+    def _find_bundle_id(self, root: Path, target_hint: str | None = None) -> str | None:
         """Find bundle identifier from Configuration-{bundleId}.{env}.plist filenames,
-        Info.plist, or xcodeproj build settings."""
+        Info.plist, or xcodeproj build settings.
+
+        When target_hint is provided, only Configuration plists whose bundle ID segment
+        contains the target_hint name (case-insensitive) are considered, allowing
+        monorepos with multiple app targets to resolve the correct bundle ID.
+        """
         # Pattern: Configuration-{bundleId}.{env}.plist — most reliable for multi-env apps.
         # Collect all candidates and prefer the one whose PROD plist (no env suffix) exists,
         # falling back to the lexicographically first candidate.
         env_labels = {"dev", "stg", "qa", "uat", "test", "debug", "release", "prod"}
         candidates: dict[str, bool] = {}  # bundle_id -> has_prod_plist
+
+        target_lower = target_hint.lower() if target_hint else None
 
         for plist_path in root.rglob("Configuration-*.plist"):
             stem = plist_path.stem  # e.g. "Configuration-com.laclippers.fanapp.dev"
@@ -186,6 +201,10 @@ class IOSExtractor(Extractor):
                 candidate = inner
                 has_prod = True
             if "." in candidate:
+                # When target_hint is set, filter to plists whose bundle ID contains
+                # the target name (e.g. "fanapp" in "com.laclippers.fanapp")
+                if target_lower and target_lower not in candidate.lower():
+                    continue
                 existing = candidates.get(candidate, False)
                 candidates[candidate] = existing or has_prod
 
@@ -500,8 +519,12 @@ class IOSExtractor(Extractor):
 
         return modules
 
-    def _parse_targets(self, root: Path) -> list[str]:
-        """Parse targets from xcodeproj via pbxproj, or fall back to Package.swift."""
+    def _parse_targets(self, root: Path, target_hint: str | None = None) -> list[str]:
+        """Parse targets from xcodeproj via pbxproj, or fall back to Package.swift.
+
+        When target_hint is provided, only the matching target (case-insensitive) is
+        returned, allowing monorepos to expose a single app's targets.
+        """
         targets: list[str] = []
 
         # Try pbxproj
@@ -527,6 +550,10 @@ class IOSExtractor(Extractor):
         if not targets:
             targets = self._targets_from_package_swift(root)
 
+        if target_hint:
+            target_lower = target_hint.lower()
+            targets = [t for t in targets if target_lower in t.lower()]
+
         return targets
 
     def _targets_from_package_swift(self, root: Path) -> list[str]:
@@ -546,8 +573,35 @@ class IOSExtractor(Extractor):
                 targets.append(name)
         return targets
 
-    def _parse_build_configurations(self, root: Path) -> list[str]:
-        """Extract build configuration names from xcodeproj (e.g. DEV, STG, TEST, Release)."""
+    def _parse_build_configurations(
+        self, root: Path, target_hint: str | None = None
+    ) -> list[str]:
+        """Extract build configuration names from xcodeproj (e.g. DEV, STG, TEST, Release).
+
+        When target_hint is set, derives build variants from the entitlements filenames
+        for the matching target directory instead of the full xcodeproj list, since a
+        shared xcodeproj contains configs for all targets.
+        """
+        # If a target is scoped, infer variants from *.entitlements filenames in the
+        # target's source directory (e.g. LaClippersDEV.entitlements → DEV).
+        if target_hint:
+            target_dir = self._resolve_target_dir(root, target_hint)
+            if target_dir and target_dir.is_dir():
+                variants: list[str] = []
+                target_lower = target_hint.lower()
+                for ent_path in target_dir.rglob("*.entitlements"):
+                    stem = ent_path.stem  # e.g. "LaClippersDEV"
+                    # Strip the target prefix (case-insensitive) to get the variant suffix
+                    stem_lower = stem.lower()
+                    if stem_lower.startswith(target_lower):
+                        suffix = stem[len(target_hint):]  # e.g. "DEV", "STG"
+                    else:
+                        suffix = stem
+                    if suffix and suffix not in variants:
+                        variants.append(suffix)
+                if variants:
+                    return sorted(variants)
+
         try:
             from pbxproj import XcodeProject
         except ImportError:
@@ -571,22 +625,50 @@ class IOSExtractor(Extractor):
                 continue
         return sorted(set(configs))
 
-    def _parse_feature_domains(self, root: Path) -> list[str]:
+    def _resolve_target_dir(self, root: Path, target_hint: str) -> Path | None:
+        """Resolve the source directory for a given target name.
+
+        Looks for a direct child of root whose name matches target_hint
+        (case-insensitive exact match, then case-insensitive prefix match).
+        Returns the resolved Path or None if not found.
+        """
+        target_lower = target_hint.lower()
+        exact: Path | None = None
+        prefix: Path | None = None
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            child_lower = child.name.lower()
+            if child_lower == target_lower:
+                exact = child
+                break
+            if prefix is None and child_lower.startswith(target_lower):
+                prefix = child
+        return exact or prefix
+
+    def _parse_feature_domains(self, root: Path, target_hint: str | None = None) -> list[str]:
         """Infer feature domains from Sources/ subdirectory names under any target directory.
 
         Looks for Sources/ directories inside known target-like directories (e.g. LaClippers/,
         LACStaff/) and returns their direct subdirectory names as feature domains.
         Names with spaces are normalised (spaces replaced with underscores).
         Generic names that don't represent real features are excluded.
+
+        When target_hint is provided, only the matching target directory is scanned.
         """
         _GENERIC = {"Common", "Component", "Data", "UIComponent", "Sources", "HomeView"}
         domains: list[str] = []
         seen: set[str] = set()
 
-        # Walk direct children of root that look like target directories (have a Sources/ subdir)
-        for child in root.iterdir():
-            if not child.is_dir():
-                continue
+        # Determine which directories to walk
+        if target_hint:
+            target_dir = self._resolve_target_dir(root, target_hint)
+            candidates = [target_dir] if target_dir and target_dir.is_dir() else []
+        else:
+            # Walk direct children of root that look like target directories (have a Sources/ subdir)
+            candidates = [child for child in root.iterdir() if child.is_dir()]
+
+        for child in candidates:
             sources_dir = child / "Sources"
             if not sources_dir.is_dir():
                 continue
@@ -605,15 +687,25 @@ class IOSExtractor(Extractor):
 
         return sorted(domains)
 
-    def _parse_entitlements(self, root: Path) -> list[str]:
-        """Parse entitlement keys from *.entitlements plist files (non-sensitive only)."""
+    def _parse_entitlements(self, root: Path, target_hint: str | None = None) -> list[str]:
+        """Parse entitlement keys from *.entitlements plist files (non-sensitive only).
+
+        When target_hint is provided, only entitlements files inside the matching
+        target directory are parsed (e.g. LaClippers/ for target="LaClippers").
+        """
         entitlement_keys: list[str] = []
         sensitive_keys = {
             "com.apple.developer.associated-domains",
             "keychain-access-groups",
         }
 
-        for ent_path in root.rglob("*.entitlements"):
+        search_root = root
+        if target_hint:
+            target_dir = self._resolve_target_dir(root, target_hint)
+            if target_dir and target_dir.is_dir():
+                search_root = target_dir
+
+        for ent_path in search_root.rglob("*.entitlements"):
             try:
                 with open(ent_path, "rb") as f:
                     plist = plistlib.load(f)
@@ -626,20 +718,29 @@ class IOSExtractor(Extractor):
 
         return entitlement_keys
 
-    def _extract_env_urls(self, root: Path) -> list[dict]:
+    def _extract_env_urls(self, root: Path, target_hint: str | None = None) -> list[dict]:
         """Extract BASE_URL values from per-environment configuration plists.
 
         Returns integration_notes with scope='env:{env}' and note='BASE_URL: {url}'.
         Capped at 10 notes to respect the schema limit.
+
+        When target_hint is provided, only Configuration plists whose filename contains
+        the target_hint name (case-insensitive) are considered.
         """
         notes: list[dict] = []
         seen_urls: set[str] = set()
 
+        target_lower = target_hint.lower() if target_hint else None
         env_labels = {"dev", "stg", "qa", "uat", "test", "debug", "release", "prod"}
         for plist_path in sorted(root.rglob("Configuration-*.plist")):
             # Derive env label from filename: Configuration-com.bundle.id.env.plist
             stem = plist_path.stem  # e.g. "Configuration-com.laclippers.fanapp.dev"
             inner = stem[len("Configuration-"):]
+
+            # When target_hint is set, skip plists that don't match this target
+            if target_lower and target_lower not in inner.lower():
+                continue
+
             last = inner.split(".")[-1].lower()
             env_label = last.upper() if last in env_labels else "PROD"
 
