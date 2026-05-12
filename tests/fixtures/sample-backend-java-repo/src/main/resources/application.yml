@@ -29,5 +29,9 @@ spring:
         key: ${COSMOS_KEY:dummy-key}
         database: example-db
 
+services:
+  rewards:
+    base-url: https://rewards-service.internal
+
 server:
   port: 8080

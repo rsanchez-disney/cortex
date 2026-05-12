@@ -233,6 +233,44 @@
       "items": { "type": "string" },
       "description": "Kafka topic names referenced in application config"
     },
+    "kafka_produces": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Kafka topics this service publishes to"
+    },
+    "kafka_consumes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Kafka topics this service subscribes from"
+    },
+    "outbound_calls": {
+      "type": "array",
+      "description": "Outbound HTTP calls to other services detected from config and source",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target_url": { "type": "string", "description": "Raw base URL from config" },
+          "target_service": { "type": "string", "description": "Resolved service name" },
+          "config_key": { "type": "string", "description": "Config property key" },
+          "protocol": { "type": "string", "default": "http" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "api_calls": {
+      "type": "array",
+      "description": "Outbound API calls made by a mobile app (from Ktorfit/Retrofit/Alamofire interfaces)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "method": { "type": "string", "description": "HTTP method (GET, POST, etc.)" },
+          "path": { "type": "string", "description": "API path (e.g., /v1/orders/{id})" },
+          "interface_name": { "type": "string", "description": "Ktorfit/Retrofit interface name" },
+          "base_url_key": { "type": "string", "description": "BuildConfig field or DI qualifier" }
+        },
+        "additionalProperties": false
+      }
+    },
     "database_type": {
       "type": "string",
       "description": "Primary database type (postgresql, mysql, cosmos, etc.)"

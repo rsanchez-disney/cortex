@@ -12,6 +12,11 @@ public class OrderEventListener {
         // Process order created event
     }
 
+    @KafkaListener(topics = "demo.orders.cancelled", groupId = "demo-group")
+    public void onOrderCancelled(String message) {
+        // Process order cancelled event
+    }
+
     @Scheduled(cron = "0 0 * * * *")
     public void cleanupExpiredOrders() {
         // Hourly cleanup job

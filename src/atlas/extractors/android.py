@@ -27,6 +27,7 @@ import structlog
 from atlas import __version__
 from atlas.extractors.base import Extractor
 from atlas.schema import (
+    ApiCall,
     ApiContract,
     Dependency,
     EntryPoint,
@@ -88,6 +89,7 @@ class AndroidExtractor(Extractor):
         entry_points = self._parse_entry_activities(effective_root)
         ci = self._detect_ci(repo_path)  # CI files are at repo root, not project root
         api_contracts = self.find_api_contracts(effective_root)
+        api_calls = self._parse_ktorfit_interfaces(effective_root)
         source_repo = self._get_source_repo(repo_path)
 
         # Extract kotlin/agp versions, plugins, and build variants from version catalog + gradle
@@ -123,6 +125,7 @@ class AndroidExtractor(Extractor):
             dependencies=dependencies,
             entry_points=entry_points,
             api_contracts=api_contracts,
+            api_calls=api_calls,
             runtime=None,
             ci=ci,
             integration_notes=[
@@ -138,6 +141,138 @@ class AndroidExtractor(Extractor):
     def find_api_contracts(self, repo_path: Path) -> list[ApiContract]:
         """Mobile apps typically don't have API contracts."""
         return []
+
+    def _collect_string_constants(self, root: Path) -> dict[str, str]:
+        """Scan Kotlin source files for string const val declarations.
+
+        Handles patterns like:
+            const val TICKETING_API = "ticketing"
+            const val API_VERSION_V1 = "v1"
+            companion object { const val BASE = "/api" }
+            object ApiPaths { const val USERS = "/users" }
+
+        Scans all .kt files in the project (excluding build/generated dirs),
+        focusing on files named *Constants.kt, *Paths.kt, *Urls.kt, *Config.kt,
+        *Api.kt, *Service.kt in any directory, as well as all source files.
+
+        Returns a dict mapping constant name → string value (first-wins).
+        """
+        excluded_dirs = {"build", "generated", ".gradle", "out"}
+        constants: dict[str, str] = {}
+        const_pattern = re.compile(
+            r'''const\s+val\s+(\w+)\s*=\s*["']([^"']+)["']'''
+        )
+
+        for kt_file in root.rglob("*.kt"):
+            parts = kt_file.parts
+            if any(part in excluded_dirs for part in parts):
+                continue
+            try:
+                content = kt_file.read_text(errors="replace")
+            except OSError:
+                continue
+            for m in const_pattern.finditer(content):
+                # first-wins: don't overwrite already-seen constant names
+                constants.setdefault(m.group(1), m.group(2))
+
+        return constants
+
+    def _resolve_string_template(self, template: str, constants: dict[str, str]) -> str:
+        """Resolve Kotlin string template variables: $FOO and ${FOO}.
+
+        Args:
+            template: Path string potentially containing $VARIABLE or ${VARIABLE} refs.
+            constants: Mapping of constant name → resolved string value.
+
+        Returns:
+            The template with all resolvable variables replaced. Unresolvable
+            variables are left as-is (e.g. $UNKNOWN stays $UNKNOWN).
+        """
+        def replacer(match: re.Match) -> str:
+            # Group 1: ${VAR} form, group 2: $VAR form
+            var_name = match.group(1) or match.group(2)
+            return constants.get(var_name, match.group(0))
+
+        return re.sub(r'\$\{(\w+)\}|\$([A-Za-z_]\w*)', replacer, template)
+
+    def _parse_ktorfit_interfaces(self, root: Path) -> list[ApiCall]:
+        """Scan Kotlin source files for Ktorfit/Retrofit-style interface definitions.
+
+        Detects:
+        1. interface FooApi { @GET("/v1/foo") suspend fun ... }  — Ktorfit/Retrofit
+        2. @GET, @POST, @PUT, @DELETE, @PATCH annotations with path arguments
+        3. Groups endpoints by interface name
+
+        Resolves Kotlin string template variables (e.g. $TICKETING_API) in
+        annotation paths using const val declarations found anywhere in the project.
+
+        Focuses on files in api/, network/, data/, remote/ directories or
+        files matching *Api.kt, *Service.kt, *Endpoint.kt patterns.
+        Skips build/ and generated/ directories.
+        """
+        excluded_dirs = {"build", "generated", ".gradle", "out"}
+        network_dir_names = {"api", "network", "data", "remote", "datasource"}
+        http_annotation_pattern = re.compile(
+            r'@(GET|POST|PUT|DELETE|PATCH|HTTP)\s*\(\s*["\'](/?[^"\']+)["\']\s*\)',
+            re.IGNORECASE,
+        )
+        interface_pattern = re.compile(r'interface\s+(\w+)')
+
+        # Collect string constants once for the whole project
+        constants = self._collect_string_constants(root)
+
+        api_calls: list[ApiCall] = []
+        seen_calls: set[tuple[str, str]] = set()  # (method, path) deduplication
+
+        for kt_file in root.rglob("*.kt"):
+            parts = kt_file.parts
+            if any(part in excluded_dirs for part in parts):
+                continue
+
+            # Focus on network-related files only
+            is_network_dir = any(part.lower() in network_dir_names for part in parts)
+            is_api_file = any(
+                kt_file.name.endswith(suffix)
+                for suffix in ("Api.kt", "Service.kt", "Endpoint.kt", "ApiService.kt")
+            )
+            if not is_network_dir and not is_api_file:
+                continue
+
+            try:
+                content = kt_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            # Find interface name(s) in this file
+            interface_names = interface_pattern.findall(content)
+            interface_name = interface_names[0] if interface_names else kt_file.stem
+
+            # Find all HTTP annotations
+            for m in http_annotation_pattern.finditer(content):
+                method = m.group(1).upper()
+                raw_path = m.group(2)
+                if not raw_path.startswith("/"):
+                    raw_path = "/" + raw_path
+                # Resolve Kotlin string template variables
+                path = self._resolve_string_template(raw_path, constants)
+                if "$" in path:
+                    logger.debug(
+                        "Unresolved variables in API path",
+                        file=str(kt_file),
+                        path=path,
+                    )
+                call_key = (method, path)
+                if call_key not in seen_calls:
+                    seen_calls.add(call_key)
+                    api_calls.append(
+                        ApiCall(
+                            method=method,
+                            path=path,
+                            interface_name=interface_name,
+                        )
+                    )
+
+        return api_calls
 
     # --- Private parsing methods ---
 

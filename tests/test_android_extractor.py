@@ -993,3 +993,225 @@ class TestCIDetection:
         # CI is surfaced in the manifest when it's present.
         extractor = AndroidExtractor()
         assert extractor._detect_ci(SAMPLE_ANDROID_REPO) is None  # Fixture has no CI file
+
+
+# ---------------------------------------------------------------------------
+# TestApiCallExtraction
+# ---------------------------------------------------------------------------
+
+
+class TestApiCallExtraction:
+    """Tests for _parse_ktorfit_interfaces() (API call detection from Kotlin interfaces)."""
+
+    def test_ktorfit_interface_endpoints_parsed(self, tmp_path: Path) -> None:
+        """Kotlin interface with @GET/@POST annotations → api_calls populated."""
+        api_dir = tmp_path / "src" / "main" / "kotlin" / "com" / "example" / "api"
+        api_dir.mkdir(parents=True)
+        (api_dir / "UserApi.kt").write_text(
+            "package com.example.api\n"
+            "interface UserApi {\n"
+            '    @GET("/v1/users")\n'
+            "    suspend fun getUsers(): List<User>\n"
+            '    @POST("/v1/users")\n'
+            "    suspend fun createUser(): User\n"
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(tmp_path)
+        paths = [c.path for c in calls]
+        methods = [c.method for c in calls]
+        assert "/v1/users" in paths
+        assert "GET" in methods
+        assert "POST" in methods
+
+    def test_retrofit_interface_endpoints_parsed(self, tmp_path: Path) -> None:
+        """Retrofit-style @GET/@POST interface in network/ dir → api_calls populated."""
+        net_dir = tmp_path / "app" / "src" / "main" / "kotlin" / "com" / "example" / "network"
+        net_dir.mkdir(parents=True)
+        (net_dir / "OrderService.kt").write_text(
+            "package com.example.network\n"
+            "interface OrderService {\n"
+            '    @GET("/v1/orders/{id}")\n'
+            "    suspend fun getOrder(@Path(\"id\") id: String): Order\n"
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(tmp_path)
+        paths = [c.path for c in calls]
+        assert "/v1/orders/{id}" in paths
+
+    def test_api_calls_in_manifest(
+        self, tmp_path: Path, android_service_yaml: ServiceYaml
+    ) -> None:
+        """Full extraction includes api_calls field with parsed endpoints."""
+        api_dir = tmp_path / "app" / "src" / "main" / "kotlin" / "com" / "example" / "api"
+        api_dir.mkdir(parents=True)
+        (api_dir / "PayApi.kt").write_text(
+            "package com.example.api\n"
+            "interface PayApi {\n"
+            '    @GET("/v1/payments")\n'
+            "    suspend fun getPayments(): List<Payment>\n"
+            "}\n"
+        )
+        # Minimal gradle setup
+        (tmp_path / "settings.gradle.kts").write_text('rootProject.name = "test-app"\n')
+        extractor = AndroidExtractor()
+        with patch.object(extractor, "_get_source_repo", return_value=None):
+            manifest = extractor.extract(tmp_path, android_service_yaml)
+        assert isinstance(manifest.api_calls, list)
+        paths = [c.path for c in manifest.api_calls]
+        assert "/v1/payments" in paths
+
+    def test_no_api_calls_in_minimal_repo(
+        self, tmp_path: Path, android_service_yaml: ServiceYaml
+    ) -> None:
+        """Minimal repo with no network interfaces → api_calls is empty list."""
+        (tmp_path / "settings.gradle.kts").write_text('rootProject.name = "test-app"\n')
+        extractor = AndroidExtractor()
+        with patch.object(extractor, "_get_source_repo", return_value=None):
+            manifest = extractor.extract(tmp_path, android_service_yaml)
+        assert manifest.api_calls == []
+
+    def test_fixture_has_api_calls(self) -> None:
+        """The sample Android fixture OrderApi.kt → api_calls populated."""
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(SAMPLE_ANDROID_REPO)
+        paths = [c.path for c in calls]
+        assert "/v1/orders" in paths
+        assert "/v1/orders/{id}" in paths
+
+    def test_build_dirs_excluded(self, tmp_path: Path) -> None:
+        """Files in build/ directories are not scanned."""
+        build_api = tmp_path / "app" / "build" / "generated" / "api"
+        build_api.mkdir(parents=True)
+        (build_api / "GeneratedApi.kt").write_text(
+            "interface GeneratedApi {\n"
+            '    @GET("/v1/should-not-appear")\n'
+            "    suspend fun get(): String\n"
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(tmp_path)
+        paths = [c.path for c in calls]
+        assert "/v1/should-not-appear" not in paths
+
+    def test_string_template_resolution(self, tmp_path: Path) -> None:
+        """@GET with $VARIABLE references are resolved using const val declarations."""
+        api_dir = tmp_path / "src" / "main" / "kotlin" / "com" / "example" / "api"
+        api_dir.mkdir(parents=True)
+        # Constants file in same package
+        (api_dir / "ApiConstants.kt").write_text(
+            "package com.example.api\n"
+            "object ApiConstants {\n"
+            '    const val BASE_PATH = "orders"\n'
+            '    const val API_VERSION = "v1"\n'
+            "}\n"
+        )
+        (api_dir / "OrderApi.kt").write_text(
+            "package com.example.api\n"
+            "interface OrderApi {\n"
+            '    @GET("/$BASE_PATH/$API_VERSION/items")\n'
+            "    suspend fun getItems(): List<Item>\n"
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(tmp_path)
+        paths = [c.path for c in calls]
+        assert "/orders/v1/items" in paths
+
+    def test_curly_brace_template_resolution(self, tmp_path: Path) -> None:
+        """${VARIABLE} syntax is resolved in addition to $VARIABLE."""
+        api_dir = tmp_path / "src" / "main" / "kotlin" / "com" / "example" / "api"
+        api_dir.mkdir(parents=True)
+        (api_dir / "ApiConstants.kt").write_text(
+            "package com.example.api\n"
+            'const val SERVICE = "payments"\n'
+            'const val VER = "v2"\n'
+        )
+        (api_dir / "PaymentApi.kt").write_text(
+            "package com.example.api\n"
+            "interface PaymentApi {\n"
+            '    @POST("/${SERVICE}/${VER}/charge")\n'
+            "    suspend fun charge(): Response\n"
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(tmp_path)
+        paths = [c.path for c in calls]
+        assert "/payments/v2/charge" in paths
+
+    def test_unresolved_variables_kept(self, tmp_path: Path) -> None:
+        """When a constant can't be found, the raw $VARIABLE remains (no crash)."""
+        api_dir = tmp_path / "src" / "main" / "kotlin" / "com" / "example" / "api"
+        api_dir.mkdir(parents=True)
+        # No constants file — $UNKNOWN_VAR has no definition
+        (api_dir / "FooApi.kt").write_text(
+            "package com.example.api\n"
+            "interface FooApi {\n"
+            '    @GET("/$UNKNOWN_VAR/resource")\n'
+            "    suspend fun get(): String\n"
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(tmp_path)
+        # Must not crash; path retains unresolved variable
+        assert len(calls) == 1
+        assert "$UNKNOWN_VAR" in calls[0].path
+
+    def test_collect_string_constants_scans_all_kt_files(self, tmp_path: Path) -> None:
+        """_collect_string_constants finds constants across different directories."""
+        # Constant in a top-level constants file
+        const_dir = tmp_path / "src" / "main" / "kotlin" / "com" / "example"
+        const_dir.mkdir(parents=True)
+        (const_dir / "Constants.kt").write_text(
+            'const val ROOT_API = "rootapi"\n'
+        )
+        # Constant inside a companion object in an api file
+        api_dir = const_dir / "api"
+        api_dir.mkdir()
+        (api_dir / "Config.kt").write_text(
+            "object Config {\n"
+            '    const val VERSION = "v3"\n'
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        constants = extractor._collect_string_constants(tmp_path)
+        assert constants.get("ROOT_API") == "rootapi"
+        assert constants.get("VERSION") == "v3"
+
+    def test_resolve_string_template_mixed_syntax(self) -> None:
+        """_resolve_string_template handles both $VAR and ${VAR} in same string."""
+        extractor = AndroidExtractor()
+        constants = {"SVC": "ticketing", "VER": "v1"}
+        result = extractor._resolve_string_template("/$SVC/${VER}/games", constants)
+        assert result == "/ticketing/v1/games"
+
+    def test_resolve_string_template_camelcase_variable(self) -> None:
+        """_resolve_string_template resolves camelCase variable names ($identityMicro)."""
+        extractor = AndroidExtractor()
+        constants = {"identityMicro": "identity", "v2": "v2"}
+        result = extractor._resolve_string_template("/$identityMicro$v2/login", constants)
+        assert result == "/identityv2/login"
+
+    def test_duplicate_api_calls_deduplicated(self, tmp_path: Path) -> None:
+        """Same @GET path defined in two files yields only one api_call entry."""
+        api_dir = tmp_path / "src" / "main" / "kotlin" / "com" / "example" / "api"
+        api_dir.mkdir(parents=True)
+        # Two interface files with the same annotation
+        (api_dir / "OrderApi.kt").write_text(
+            "interface OrderApi {\n"
+            '    @GET("/v1/orders")\n'
+            "    suspend fun getOrders(): List<Order>\n"
+            "}\n"
+        )
+        (api_dir / "OrderApiV2.kt").write_text(
+            "interface OrderApiV2 {\n"
+            '    @GET("/v1/orders")\n'  # same path
+            "    suspend fun list(): List<Order>\n"
+            "}\n"
+        )
+        extractor = AndroidExtractor()
+        calls = extractor._parse_ktorfit_interfaces(tmp_path)
+        paths = [c.path for c in calls]
+        # Must appear exactly once
+        assert paths.count("/v1/orders") == 1

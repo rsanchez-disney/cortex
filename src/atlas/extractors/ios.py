@@ -27,6 +27,7 @@ import structlog
 from atlas import __version__
 from atlas.extractors.base import Extractor
 from atlas.schema import (
+    ApiCall,
     ApiContract,
     Dependency,
     EntryPoint,
@@ -70,6 +71,14 @@ class IOSExtractor(Extractor):
         integration_notes = self._extract_env_urls(effective_root, target_hint=target_hint)
         ci = self._detect_ci(repo_path)
         api_contracts = self.find_api_contracts(effective_root)
+        # Scope api_calls to the target directory when a target hint is set,
+        # so monorepo apps (fan-app-ios vs staff-app-ios) don't share call lists.
+        api_calls_root = effective_root
+        if target_hint:
+            target_dir = self._resolve_target_dir(effective_root, target_hint)
+            if target_dir and target_dir.is_dir():
+                api_calls_root = target_dir
+        api_calls = self._parse_api_calls(api_calls_root)
 
         # Build entry points: xcodeproj targets + feature domains from Sources/
         entry_points: list[EntryPoint] = []
@@ -108,6 +117,7 @@ class IOSExtractor(Extractor):
             dependencies=dependencies,
             entry_points=entry_points,
             api_contracts=api_contracts,
+            api_calls=api_calls,
             runtime=None,
             ci=ci,
             integration_notes=all_notes,
@@ -119,6 +129,130 @@ class IOSExtractor(Extractor):
     def find_api_contracts(self, repo_path: Path) -> list[ApiContract]:
         """Mobile apps typically don't have API contracts."""
         return []
+
+    def _parse_api_calls(self, root: Path) -> list[ApiCall]:
+        """Scan Swift source files for networking patterns.
+
+        Detects:
+        1. Moya TargetType implementations: var path: String { "/v1/foo" }
+           + var method: Moya.Method { .get }
+        2. Alamofire router enums: enum Router { case getAccount } with path/method
+        3. URL path string literals matching /v\\d+/.* in networking files
+        4. Simple string constants in files under Network/, API/, Services/ directories
+
+        Focuses on files in Network/, API/, Services/, DataSource/, Remote/ directories.
+        Skips .build/, DerivedData/, Pods/ directories.
+        """
+        excluded_dirs = {".build", "DerivedData", "Pods", "Carthage", ".git"}
+        network_dir_names = {"network", "api", "services", "datasource", "remote"}
+
+        # Pattern: var path: String { return "/..." } or var path: String { "/..." }
+        # Relaxed: accepts any path starting with /, not just versioned ones (/v\d+/)
+        path_prop_pattern = re.compile(
+            r'var\s+path\s*:\s*String\s*\{[^}]*?(?:return\s+)?["\'](/[^"\']+)["\']',
+            re.DOTALL,
+        )
+        # Pattern: case .getAccount: return "/accounts" (any path starting with /)
+        # Uses /[a-z] to avoid matching filesystem paths like "/Users/..."
+        case_return_pattern = re.compile(
+            r'return\s+["\'](/[a-z][^"\']*)["\']',
+        )
+        # Pattern for detecting method from Moya-style or plain String method property
+        # Handles: var method: Moya.Method { .get }
+        #      and var method: String { ... "GET" ... }
+        method_prop_pattern = re.compile(
+            r'var\s+method\s*:\s*(?:Moya\.)?(?:Method|String)\s*\{[^}]*?'
+            r'(?:\.\s*(get|post|put|delete|patch)|["\']([Gg][Ee][Tt]|[Pp][Oo][Ss][Tt]'
+            r'|[Pp][Uu][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Aa][Tt][Cc][Hh])["\'])',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        # Compiled filter for paths that look like placeholder/variable names rather than
+        # real API routes. Rejects paths like /pathToTheInformation or /someCamelCaseThing
+        # (single segment, camelCase, no hyphens/underscores — strongly suggests a variable).
+        _noise_path_re = re.compile(
+            r'^/[a-z][a-zA-Z0-9]*$'   # /camelCase with no separators or sub-segments
+        )
+
+        def _is_noise_path(p: str) -> bool:
+            """Return True if the path looks like a placeholder, not a real API route."""
+            # Single camelCase segment (e.g. /pathToTheInformation)
+            if _noise_path_re.match(p):
+                return True
+            # Contains suspicious placeholder words
+            lower = p.lower()
+            if any(w in lower for w in ("placeholder", "example", "yourpath", "pathto")):
+                return True
+            return False
+
+        api_calls: list[ApiCall] = []
+        seen_paths: set[str] = set()
+
+        for swift_file in root.rglob("*.swift"):
+            parts = swift_file.parts
+            if any(part in excluded_dirs for part in parts):
+                continue
+
+            # Focus on network-related files
+            is_network_dir = any(part.lower() in network_dir_names for part in parts)
+            is_api_file = any(
+                swift_file.name.endswith(suffix)
+                for suffix in ("Router.swift", "API.swift", "Api.swift", "Target.swift",
+                               "NetworkLayer.swift", "APIRouter.swift", "Endpoint.swift",
+                               "Service.swift", "Client.swift")
+            )
+            # Also include any file that seems to be a router/API definition
+            try:
+                content = swift_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            # Relaxed gate: require "var path" and any "/" (not just "/v")
+            has_path_var = "var path" in content and "/" in content
+            if not (is_network_dir or is_api_file or has_path_var):
+                continue
+
+            interface_name = swift_file.stem
+
+            # Detect method from Moya-style or plain String var method
+            method: str | None = None
+            method_m = method_prop_pattern.search(content)
+            if method_m:
+                # Group 1: .get/.post style; group 2: "GET"/"POST" string style
+                raw_method = method_m.group(1) or method_m.group(2)
+                if raw_method:
+                    method = raw_method.upper()
+
+            # Find paths from var path { ... } pattern
+            for m in path_prop_pattern.finditer(content):
+                path = m.group(1)
+                # Treat Swift string interpolation \(...) like a path parameter {param}
+                path = re.sub(r'\\\([^)]*\)', '{param}', path)
+                if path not in seen_paths and not _is_noise_path(path):
+                    seen_paths.add(path)
+                    api_calls.append(
+                        ApiCall(
+                            method=method,
+                            path=path,
+                            interface_name=interface_name,
+                        )
+                    )
+
+            # Find paths from case return statements (router pattern)
+            for m in case_return_pattern.finditer(content):
+                path = m.group(1)
+                # Treat Swift string interpolation \(...) like a path parameter {param}
+                path = re.sub(r'\\\([^)]*\)', '{param}', path)
+                if path not in seen_paths and not _is_noise_path(path):
+                    api_calls.append(
+                        ApiCall(
+                            method=None,  # method context not easily inferable per-case
+                            path=path,
+                            interface_name=interface_name,
+                        )
+                    )
+
+        return api_calls
 
     # --- Private parsing methods ---
 
@@ -132,18 +266,67 @@ class IOSExtractor(Extractor):
         return "objective-c"
 
     def _detect_swift_version(self, root: Path) -> str | None:
-        """Detect Swift version from Package.swift swift-tools-version comment."""
+        """Detect Swift version from multiple sources (highest priority first):
+
+        1. .xcode-version file — specifies the Xcode version, which maps to Swift
+        2. Package.swift swiftLanguageVersions([.v5]) — explicit Swift language version
+        3. xcodeproj SWIFT_VERSION build setting via pbxproj
+        4. Package.swift swift-tools-version comment (least reliable — often older)
+        """
+        # 1. .xcode-version file: "16.2" → Xcode 16.x uses Swift 6.x, 15.x → Swift 5.9/5.10
+        xcode_ver_file = root / ".xcode-version"
+        if xcode_ver_file.exists():
+            try:
+                raw = xcode_ver_file.read_text().strip()
+                # Parse major.minor from strings like "16.2" or "16.2.1"
+                xm = re.match(r"(\d+)\.(\d+)", raw)
+                if xm:
+                    xcode_major = int(xm.group(1))
+                    xcode_minor = int(xm.group(2))
+                    # Xcode 16+ ships Swift 6.x; Xcode 15 ships Swift 5.9/5.10
+                    if xcode_major >= 16:
+                        return f"6.{xcode_minor}"
+                    elif xcode_major == 15:
+                        return "5.10" if xcode_minor >= 3 else "5.9"
+                    elif xcode_major == 14:
+                        return "5.7" if xcode_minor == 0 else "5.8"
+            except OSError:
+                pass
+
+        # 2. Package.swift swiftLanguageVersions([.v5]) or .v6
         package_swift = root / "Package.swift"
         if package_swift.exists():
-            content = package_swift.read_text()
-            m = re.search(r"swift-tools-version:\s*([\d.]+)", content)
-            if m:
-                return m.group(1)
+            try:
+                content = package_swift.read_text()
+                # swiftLanguageVersions: [.v5, .v6] or [.version("5.9")]
+                slv_m = re.search(
+                    r'swiftLanguageVersions\s*:\s*\[([^\]]+)\]', content
+                )
+                if slv_m:
+                    inner = slv_m.group(1)
+                    # Look for highest .vN or .version("N.x")
+                    versions = re.findall(r'\.v(\d+)', inner)
+                    ver_strings = re.findall(r'\.version\s*\(\s*["\'](\d+[\d.]*)["\']', inner)
+                    all_vers = versions + ver_strings
+                    if all_vers:
+                        return sorted(all_vers, reverse=True)[0]
+            except OSError:
+                pass
 
-        # Try xcodeproj settings via pbxproj
+        # 3. xcodeproj SWIFT_VERSION build setting via pbxproj
         swift_ver = self._swift_version_from_xcodeproj(root)
         if swift_ver:
             return swift_ver
+
+        # 4. Package.swift swift-tools-version (fallback — often older than actual Swift ver)
+        if package_swift.exists():
+            try:
+                content = package_swift.read_text()
+                m = re.search(r"swift-tools-version:\s*([\d.]+)", content)
+                if m:
+                    return m.group(1)
+            except OSError:
+                pass
 
         return None
 

@@ -186,6 +186,10 @@ class ServiceManifest(BaseModel):
     framework: str | None = None  # "spring-boot", "micronaut", "quarkus", etc.
     flyway_migration_count: int | None = None
     kafka_topics: list[str] = Field(default_factory=list)
+    kafka_produces: list[str] = Field(default_factory=list)
+    kafka_consumes: list[str] = Field(default_factory=list)
+    outbound_calls: list[OutboundCall] = Field(default_factory=list)
+    api_calls: list[ApiCall] = Field(default_factory=list)
     database_type: str | None = None  # "postgresql", "mysql", "cosmos", etc.
     secondary_databases: list[str] = Field(default_factory=list)  # additional detected DBs
     cache_type: str | None = None  # "redis", "memcached", "caffeine", etc.
@@ -238,6 +242,42 @@ class GraphEntry(BaseModel):
     gradle_plugins: list[str] = Field(default_factory=list)
     ci: str | None = None
     framework: str | None = None
+    kafka_produces: list[str] = Field(default_factory=list)
+    kafka_consumes: list[str] = Field(default_factory=list)
+
+
+class OutboundCall(BaseModel):
+    """An outbound HTTP call to another service."""
+
+    target_url: str | None = None  # raw base URL from config
+    target_service: str | None = None  # resolved service name (set during aggregation)
+    config_key: str | None = None  # the config property key (e.g., "services.identity.base-url")
+    protocol: str = "http"
+
+
+class ApiCall(BaseModel):
+    """An outbound API call made by a mobile app."""
+
+    method: str | None = None  # "GET", "POST", etc.
+    path: str | None = None  # "/v1/accounts/{id}"
+    interface_name: str | None = None  # "IdentityApi" (Ktorfit interface name)
+    base_url_key: str | None = None  # BuildConfig field or DI qualifier
+
+
+class ServiceEdge(BaseModel):
+    """A communication link between two services."""
+
+    source: str  # producing/calling service name
+    target: str  # consuming/called service name
+    protocol: str  # "kafka", "http"
+    detail: str | None = None  # topic name for kafka, endpoint path for http
+    confidence: float = 1.0  # 0.0-1.0
+
+
+class CommunicationGraph(BaseModel):
+    """Cross-service communication edges."""
+
+    edges: list[ServiceEdge] = Field(default_factory=list)
 
 
 class GraphMetadata(BaseModel):
@@ -252,5 +292,6 @@ class PlatformGraph(BaseModel):
     """The aggregated graph — written to graph/latest.json."""
 
     services: list[GraphEntry] = Field(default_factory=list)
+    communication: CommunicationGraph = Field(default_factory=CommunicationGraph)
     failed_extractions: list[ExtractionError] = Field(default_factory=list)
     metadata: GraphMetadata

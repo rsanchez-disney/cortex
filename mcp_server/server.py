@@ -193,17 +193,29 @@ class AtlasMCPServer:
             tokens = _tokenize(task_description)
             if not tokens:
                 # No meaningful tokens — return all services (unscored listing query)
-                all_svcs = [
-                    {
-                        "name": svc["name"],
-                        "type": svc["type"],
-                        "domain": svc["domain"],
-                        "purpose": svc["purpose"],
-                        "score": 1.0,
-                        "matched_on": ["all"],
-                    }
-                    for svc in graph.get("services", [])
-                ][:max_results]
+                comm_edges_all = graph.get("communication", {}).get("edges", [])
+                all_svcs = []
+                for svc in graph.get("services", []):
+                    svc_name = svc["name"]
+                    neighbor_names: set[str] = set()
+                    for edge in comm_edges_all:
+                        if edge.get("source") == svc_name:
+                            neighbor_names.add(edge.get("target", ""))
+                        elif edge.get("target") == svc_name:
+                            neighbor_names.add(edge.get("source", ""))
+                    neighbor_names.discard("")
+                    all_svcs.append(
+                        {
+                            "name": svc_name,
+                            "type": svc["type"],
+                            "domain": svc["domain"],
+                            "purpose": svc["purpose"],
+                            "score": 1.0,
+                            "matched_on": ["all"],
+                            "communicates_with": sorted(neighbor_names),
+                        }
+                    )
+                all_svcs = all_svcs[:max_results]
                 result = {"candidates": all_svcs}
                 await self._log_query(
                     "find_relevant_services",
@@ -238,6 +250,19 @@ class AtlasMCPServer:
                 if max_score > 0:
                     for c in candidates:
                         c["score"] = round(c["score"] / max_score, 2)
+
+            # Enrich candidates with immediate communication neighbors
+            comm_edges = graph.get("communication", {}).get("edges", [])
+            for candidate in candidates:
+                svc_name = candidate["name"]
+                neighbor_names: set[str] = set()
+                for edge in comm_edges:
+                    if edge.get("source") == svc_name:
+                        neighbor_names.add(edge.get("target", ""))
+                    elif edge.get("target") == svc_name:
+                        neighbor_names.add(edge.get("source", ""))
+                neighbor_names.discard("")
+                candidate["communicates_with"] = sorted(neighbor_names)
 
             result = {"candidates": candidates}
             await self._log_query(
@@ -295,7 +320,7 @@ class AtlasMCPServer:
             start = time.time()
 
             if include is None:
-                include = ["manifest", "deps", "contracts", "notes"]
+                include = ["manifest", "deps", "contracts", "notes", "communication"]
 
             graph = await self._ensure_graph()
             svc = _find_service(graph, name)
@@ -344,6 +369,38 @@ class AtlasMCPServer:
                 context["integration_notes"] = {
                     "global": global_notes,
                     "by_endpoint": by_endpoint,
+                }
+
+            if "communication" in include:
+                comm = graph.get("communication", {})
+                edges = comm.get("edges", [])
+
+                # Filter edges involving this service
+                calls_out = [e for e in edges if e.get("source") == name]
+                called_by = [e for e in edges if e.get("target") == name]
+
+                # Group Kafka edges by topic
+                publishes_to: dict[str, list[str]] = {}
+                for e in calls_out:
+                    if e.get("protocol") == "kafka":
+                        topic = e.get("detail", "unknown")
+                        publishes_to.setdefault(topic, []).append(e.get("target", ""))
+
+                subscribes_to: dict[str, list[str]] = {}
+                for e in called_by:
+                    if e.get("protocol") == "kafka":
+                        topic = e.get("detail", "unknown")
+                        subscribes_to.setdefault(topic, []).append(e.get("source", ""))
+
+                context["communication"] = {
+                    "publishes_to": [
+                        {"topic": t, "consumers": c} for t, c in publishes_to.items()
+                    ],
+                    "subscribes_to": [
+                        {"topic": t, "producers": p} for t, p in subscribes_to.items()
+                    ],
+                    "http_calls": [e for e in calls_out if e.get("protocol") == "http"],
+                    "http_called_by": [e for e in called_by if e.get("protocol") == "http"],
                 }
 
             await self._log_query(

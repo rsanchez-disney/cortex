@@ -6,17 +6,20 @@ and handles failed extractions.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import structlog
 
 from atlas import __version__
 from atlas.schema import (
+    CommunicationGraph,
     EndpointIndex,
     ExtractionError,
     GraphEntry,
     GraphMetadata,
     PlatformGraph,
+    ServiceEdge,
 )
 from atlas.storage import StorageBackend, StorageError
 
@@ -57,11 +60,15 @@ def aggregate(storage: StorageBackend) -> PlatformGraph:
             elif filename == "extraction-error.json":
                 repos[repo_name]["has_error"] = True
 
+    # Collect all manifests in a single pass for both graph entry building and edge resolution
+    all_manifests: list[dict] = []
+
     # Process each repo
     for repo_name, files in sorted(repos.items()):
         if files.get("has_manifest"):
             try:
                 manifest_data = storage.read_json(f"services/{repo_name}/manifest.json")
+                all_manifests.append(manifest_data)
                 entry = _manifest_to_graph_entry(manifest_data)
                 services.append(entry)
                 logger.info("added service to graph", repo=repo_name)
@@ -97,8 +104,30 @@ def aggregate(storage: StorageBackend) -> PlatformGraph:
                     )
                 )
 
+    # Resolve cross-service communication edges
+    kafka_edges = _resolve_kafka_edges(all_manifests)
+    http_edges = _resolve_http_edges(all_manifests, services)
+    api_call_edges = _resolve_api_call_edges(all_manifests, services)
+
+    # Fallback: for mobile services with zero path-matched edges, try interface-name matching
+    path_matched_callers = {e.source for e in api_call_edges}
+    iface_edges = _resolve_api_call_edges_by_interface(all_manifests, services)
+    # Deduplicate: skip interface-name edges for services that already have path-match edges
+    # and skip (source, target) pairs already covered by path-match edges
+    path_edge_pairs = {(e.source, e.target) for e in api_call_edges}
+    deduped_iface_edges = [
+        e for e in iface_edges
+        if e.source not in path_matched_callers
+        or (e.source, e.target) not in path_edge_pairs
+    ]
+
+    communication = CommunicationGraph(
+        edges=kafka_edges + http_edges + api_call_edges + deduped_iface_edges
+    )
+
     graph = PlatformGraph(
         services=services,
+        communication=communication,
         failed_extractions=failed,
         metadata=GraphMetadata(
             timestamp=datetime.now(timezone.utc),
@@ -155,4 +184,336 @@ def _manifest_to_graph_entry(manifest: dict) -> GraphEntry:
         gradle_plugins=manifest.get("gradle_plugins", []),
         ci=manifest.get("ci"),
         framework=manifest.get("framework"),
+        kafka_produces=manifest.get("kafka_produces", []),
+        kafka_consumes=manifest.get("kafka_consumes", []),
     )
+
+
+def _extract_topic_name(raw: str) -> str:
+    """Extract the effective topic name from a raw topic reference.
+
+    Handles:
+    - "${VAR:default-topic-name}" → "default-topic-name"
+    - "${VAR}" → "VAR"  (no default — keep var name for dedup only)
+    - "plain-topic-name" → "plain-topic-name"
+    - "CONSTANT_NAME" → "CONSTANT_NAME" (UPPER_SNAKE — returned as-is)
+    """
+    m = re.fullmatch(r"\$\{([^}]+)\}", raw.strip())
+    if m:
+        inner = m.group(1)
+        if ":" in inner:
+            return inner.split(":", 1)[1]  # use the default value
+        return inner  # no default — keep env var name
+    return raw
+
+
+def _resolve_kafka_edges(manifests: list[dict]) -> list[ServiceEdge]:
+    """Build Kafka communication edges from producer/consumer topic data.
+
+    For each topic, creates ServiceEdge objects linking producers to consumers.
+    If a topic has producers but no consumers (or vice versa), no edge is created
+    since the counterpart is outside Atlas-tracked services.
+
+    Topic names stored as ``${VAR:default}`` are resolved to their default value
+    before matching, so producer/consumer sides with different Spring EL variable
+    names can still be matched by shared default topic string.
+    """
+    # Map: effective_topic_name → list of producer service names
+    topic_producers: dict[str, list[str]] = {}
+    # Map: effective_topic_name → list of consumer service names
+    topic_consumers: dict[str, list[str]] = {}
+
+    for manifest in manifests:
+        service_name = manifest.get("name", "")
+        if not service_name:
+            continue
+
+        for topic in manifest.get("kafka_produces", []):
+            if topic:
+                effective = _extract_topic_name(topic)
+                topic_producers.setdefault(effective, []).append(service_name)
+
+        for topic in manifest.get("kafka_consumes", []):
+            if topic:
+                effective = _extract_topic_name(topic)
+                topic_consumers.setdefault(effective, []).append(service_name)
+
+    edges: list[ServiceEdge] = []
+    all_topics = set(topic_producers) | set(topic_consumers)
+
+    for topic in sorted(all_topics):
+        producers = topic_producers.get(topic, [])
+        consumers = topic_consumers.get(topic, [])
+
+        # Only create edges when both sides are known within Atlas-tracked services
+        for producer in producers:
+            for consumer in consumers:
+                edges.append(
+                    ServiceEdge(
+                        source=producer,
+                        target=consumer,
+                        protocol="kafka",
+                        detail=topic,
+                        confidence=0.9,
+                    )
+                )
+
+    return edges
+
+
+def _resolve_http_edges(manifests: list[dict], services: list[GraphEntry]) -> list[ServiceEdge]:
+    """Build HTTP communication edges from outbound_calls data.
+
+    Matches target_url hostnames and config key segments against known service names.
+    """
+    service_names = {s.name for s in services}
+    edges: list[ServiceEdge] = []
+    seen: set[tuple[str, str]] = set()
+
+    for manifest in manifests:
+        caller = manifest.get("name", "")
+        if not caller:
+            continue
+
+        for call in manifest.get("outbound_calls", []):
+            target_url = call.get("target_url") or ""
+            config_key = call.get("config_key") or ""
+            target_service = call.get("target_service")
+
+            # Try to resolve target service if not already set
+            if not target_service:
+                # Check URL hostname for service name hints
+                url_match = re.search(r"https?://([^/:]+)", target_url)
+                if url_match:
+                    hostname = url_match.group(1)
+                    for svc_name in service_names:
+                        # Strip common suffixes and check for substring match
+                        base = re.sub(r"[-_](microservice|service|ms|api|svc)$", "", svc_name)
+                        if base and base in hostname:
+                            target_service = svc_name
+                            break
+
+                # Fall back to config key segments
+                if not target_service and config_key:
+                    key_parts = re.split(r"[.\-_]", config_key.lower())
+                    for svc_name in service_names:
+                        svc_base = re.sub(
+                            r"[-_](microservice|service|ms|api|svc)$", "", svc_name
+                        )
+                        if svc_base and any(svc_base in part for part in key_parts):
+                            target_service = svc_name
+                            break
+
+            if target_service and target_service in service_names and target_service != caller:
+                edge_key = (caller, target_service)
+                if edge_key not in seen:
+                    seen.add(edge_key)
+                    edges.append(
+                        ServiceEdge(
+                            source=caller,
+                            target=target_service,
+                            protocol="http",
+                            detail=target_url or config_key or None,
+                            confidence=0.7,
+                        )
+                    )
+
+    return edges
+
+
+def _normalize_path(path: str) -> str:
+    """Strip path parameters and unresolved variables for matching.
+
+    Handles:
+    - {param} path parameters: /v1/orders/{id} → /v1/orders
+    - Unresolved $VARIABLE tokens: /$UNKNOWN/orders → /orders
+    - Trailing slashes
+    """
+    # Strip unresolved $VAR and ${VAR} Kotlin template references
+    path = re.sub(r"\$\{?[A-Za-z_]\w*\}?", "", path)
+    # Strip {param} REST path parameters
+    path = re.sub(r"\{[^}]+\}", "", path)
+    # Collapse any double slashes introduced by variable removal
+    path = re.sub(r"/{2,}", "/", path)
+    return path.rstrip("/")
+
+
+def _resolve_api_call_edges(
+    manifests: list[dict], services: list[GraphEntry]
+) -> list[ServiceEdge]:
+    """Build HTTP edges from mobile api_calls to backend services by path matching."""
+    edges: list[ServiceEdge] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    # Collect backend endpoints: service_name → list of (method, path)
+    backend_endpoints: dict[str, list[tuple[str, str]]] = {}
+    for svc in services:
+        svc_type = svc.type
+        if svc_type in ("android", "ios"):
+            continue
+        endpoints = [(ep.method or "", ep.path or "") for ep in svc.endpoints if ep.path]
+        if endpoints:
+            backend_endpoints[svc.name] = endpoints
+
+    for manifest in manifests:
+        caller = manifest.get("name", "")
+        svc_type = manifest.get("type", "")
+        if not caller or svc_type not in ("android", "ios"):
+            continue
+
+        for call in manifest.get("api_calls", []):
+            method = (call.get("method") or "").upper()
+            path = call.get("path") or ""
+            if not path:
+                continue
+
+            normalized_call_path = _normalize_path(path)
+
+            for backend_name, endpoints in backend_endpoints.items():
+                for ep_method, ep_path in endpoints:
+                    if method and ep_method and method != ep_method.upper():
+                        continue
+                    normalized_ep_path = _normalize_path(ep_path)
+                    if normalized_call_path and normalized_ep_path:
+                        # Match strategy: mobile paths include a routing prefix segment
+                        # (e.g. /ticketing/v1/games, /commerce/v1/orders) while backend
+                        # paths start at /v1/... The mobile prefix is the microservice
+                        # routing segment; strip it before comparing to backend path.
+                        #
+                        # Only match if the mobile path's suffix (after stripping the
+                        # first non-version segment) equals the backend endpoint path,
+                        # AND the stripped prefix aligns with the backend service name.
+                        match = False
+                        if normalized_call_path == normalized_ep_path:
+                            match = True
+                        else:
+                            # Try stripping the mobile routing prefix (first segment after /)
+                            # e.g. /ticketing/v1/games → /v1/games
+                            call_parts = normalized_call_path.lstrip("/").split("/")
+                            if len(call_parts) > 1:
+                                suffix = "/" + "/".join(call_parts[1:])
+                                if suffix == normalized_ep_path and len(normalized_ep_path) >= 6:
+                                    # Verify the prefix segment matches the backend service
+                                    mobile_prefix = call_parts[0].lower()
+                                    svc_stem = re.sub(
+                                        r"[_-](microservice|service|ms|api|svc)$",
+                                        "", backend_name, flags=re.IGNORECASE
+                                    ).lower().replace("-", "").replace("_", "")
+                                    if mobile_prefix and (
+                                        mobile_prefix == svc_stem
+                                        or mobile_prefix in svc_stem
+                                        or svc_stem in mobile_prefix
+                                    ):
+                                        match = True
+                        if match:
+                            edge_key = (caller, backend_name, path)
+                            if edge_key not in seen:
+                                seen.add(edge_key)
+                                edges.append(
+                                    ServiceEdge(
+                                        source=caller,
+                                        target=backend_name,
+                                        protocol="http",
+                                        detail=f"{method} {path}" if method else path,
+                                        confidence=0.7,
+                                    )
+                                )
+                            break
+
+    return edges
+
+
+def _resolve_api_call_edges_by_interface(
+    manifests: list[dict], services: list[GraphEntry]
+) -> list[ServiceEdge]:
+    """Fallback: match mobile interface names to backend service names heuristically.
+
+    When path-based matching produces no edges (e.g. because Kotlin string template
+    constants couldn't be resolved), interface names like ``TicketingApi`` are stemmed
+    (``ticketing``) and matched against backend service name stems
+    (``ticketing-microservice`` → ``ticketing``).
+
+    Produces edges at confidence=0.5 since the match is heuristic.
+
+    Handles multi-word interface names by splitting on camelCase boundaries and
+    checking each word component against backend stems. E.g. ``PublicHttpApi``
+    splits into [``public``, ``http``] — if any of these match a backend stem,
+    an edge is created.
+    """
+    # Build backend service stem index
+    # Strip common mobile/backend suffixes to get the bare service name
+    _IFACE_SUFFIXES = re.compile(
+        r'(HttpApi|Api|Service|Endpoint|Client|Repository|Repo)$'
+    )
+    _SVC_SUFFIXES = re.compile(
+        r'[_-](microservice|service|ms|api|svc)$', re.IGNORECASE
+    )
+
+    service_names = {s.name for s in services}
+    # backend_stems: stem → service_name (skip mobile types)
+    backend_stems: dict[str, str] = {}
+    for svc in services:
+        if svc.type in ("android", "ios"):
+            continue
+        stem = _SVC_SUFFIXES.sub("", svc.name).lower().replace("-", "").replace("_", "")
+        if stem:
+            backend_stems[stem] = svc.name
+
+    def _interface_stems(iface_name: str) -> list[str]:
+        """Split camelCase interface name into candidate match stems."""
+        # Strip known suffixes first
+        stripped = _IFACE_SUFFIXES.sub("", iface_name)
+        # CamelCase split: ["Ticketing"] or ["Public", "Http"]
+        words = re.findall(r'[A-Z][a-z0-9]*|[a-z0-9]+', stripped)
+        stems = []
+        # Full stripped name (lowercased, no separators)
+        full = stripped.lower()
+        if full:
+            stems.append(full)
+        # Each individual word component longer than 2 chars
+        for w in words:
+            w_lower = w.lower()
+            if len(w_lower) > 2 and w_lower not in stems:
+                stems.append(w_lower)
+        return stems
+
+    edges: list[ServiceEdge] = []
+    seen: set[tuple[str, str]] = set()
+
+    for manifest in manifests:
+        caller = manifest.get("name", "")
+        svc_type = manifest.get("type", "")
+        if not caller or svc_type not in ("android", "ios"):
+            continue
+
+        for call in manifest.get("api_calls", []):
+            iface_name = call.get("interface_name") or ""
+            if not iface_name:
+                continue
+
+            matched = False
+            for iface_stem in _interface_stems(iface_name):
+                if matched:
+                    break
+                # Check each backend stem: exact match OR one is a prefix of the other
+                # (e.g. "payment" matches backend stem "payments" and vice versa)
+                for backend_stem, backend_name in backend_stems.items():
+                    if backend_name not in service_names or backend_name == caller:
+                        continue
+                    if iface_stem == backend_stem or iface_stem.startswith(backend_stem) or backend_stem.startswith(iface_stem):
+                        edge_key = (caller, backend_name)
+                        if edge_key not in seen:
+                            seen.add(edge_key)
+                            edges.append(
+                                ServiceEdge(
+                                    source=caller,
+                                    target=backend_name,
+                                    protocol="http",
+                                    detail=f"interface:{iface_name}",
+                                    confidence=0.5,
+                                )
+                            )
+                        matched = True
+                        break  # One match per call is enough
+
+    return edges

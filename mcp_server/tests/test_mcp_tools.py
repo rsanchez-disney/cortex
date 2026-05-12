@@ -37,6 +37,8 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
         ],
         "entry_points": [{"kind": "main-activity", "ref": ".MainActivity"}],
         "api_contracts": [],
+        "kafka_produces": [],
+        "kafka_consumes": [],
         "ci": "github-actions",
         "integration_notes": [
             {"scope": "global", "note": "Uses custom auth flow via AuthManager"},
@@ -61,6 +63,8 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
         ],
         "entry_points": [{"kind": "target", "ref": "MyApp"}],
         "api_contracts": [],
+        "kafka_produces": ["orders.created"],
+        "kafka_consumes": [],
         "ci": "github-actions",
         "integration_notes": [
             {"scope": "global", "note": "Uses biometric auth for sensitive operations"},
@@ -72,7 +76,7 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
     storage.write_json("services/sample-android/manifest.json", android_manifest)
     storage.write_json("services/sample-ios/manifest.json", ios_manifest)
 
-    # Create graph
+    # Create graph with communication edges
     graph = {
         "services": [
             {
@@ -87,6 +91,8 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
                 "language": "kotlin",
                 "dependencies": ["retrofit", "sample-ios"],
                 "endpoints": [],
+                "kafka_produces": [],
+                "kafka_consumes": ["orders.created"],
             },
             {
                 "name": "sample-ios",
@@ -100,8 +106,21 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
                 "language": "swift",
                 "dependencies": ["Alamofire"],
                 "endpoints": [],
+                "kafka_produces": ["orders.created"],
+                "kafka_consumes": [],
             },
         ],
+        "communication": {
+            "edges": [
+                {
+                    "source": "sample-ios",
+                    "target": "sample-android",
+                    "protocol": "kafka",
+                    "detail": "orders.created",
+                    "confidence": 0.9,
+                }
+            ]
+        },
         "failed_extractions": [],
         "metadata": {
             "timestamp": "2026-04-23T03:00:00Z",
@@ -320,6 +339,82 @@ class TestGetEndpointContract:
             )
         )
         assert "error" in result
+
+
+class TestCommunicationContext:
+    """Tests for the 'communication' section in get_service_context."""
+
+    def test_communication_included_by_default(self, mcp_server: AtlasMCPServer) -> None:
+        """By default, get_service_context includes 'communication' key."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(mcp_server, "get_service_context", {"name": "sample-android"})
+        )
+        assert "communication" in result
+
+    def test_communication_shows_kafka_subscriptions(self, mcp_server: AtlasMCPServer) -> None:
+        """Service that consumes from a topic → subscribes_to populated."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(mcp_server, "get_service_context", {"name": "sample-android"})
+        )
+        comm = result.get("communication", {})
+        # sample-android consumes "orders.created" from sample-ios
+        subs = comm.get("subscribes_to", [])
+        topics = [s["topic"] for s in subs]
+        assert "orders.created" in topics
+
+    def test_communication_shows_kafka_publishes(self, mcp_server: AtlasMCPServer) -> None:
+        """Service that produces to a topic → publishes_to populated."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(mcp_server, "get_service_context", {"name": "sample-ios"})
+        )
+        comm = result.get("communication", {})
+        # sample-ios publishes "orders.created"
+        pubs = comm.get("publishes_to", [])
+        topics = [p["topic"] for p in pubs]
+        assert "orders.created" in topics
+
+    def test_communication_filtered_when_excluded(self, mcp_server: AtlasMCPServer) -> None:
+        """include=['manifest'] → no 'communication' key in response."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-android", "include": ["manifest"]},
+            )
+        )
+        assert "communication" not in result
+        assert "manifest" in result
+
+    def test_find_relevant_services_includes_communicates_with(
+        self, mcp_server: AtlasMCPServer
+    ) -> None:
+        """find_relevant_services results include communicates_with neighbor list."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {"task_description": "banking mobile"},
+            )
+        )
+        candidates = result.get("candidates", [])
+        assert len(candidates) > 0
+        for c in candidates:
+            assert "communicates_with" in c, f"Missing communicates_with on candidate: {c}"
+
+    def test_find_relevant_all_services_includes_communicates_with(
+        self, mcp_server: AtlasMCPServer
+    ) -> None:
+        """Empty query (list all) also includes communicates_with."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {"task_description": "service"},
+            )
+        )
+        candidates = result.get("candidates", [])
+        for c in candidates:
+            assert "communicates_with" in c
 
 
 # --- Helper to call tools directly ---

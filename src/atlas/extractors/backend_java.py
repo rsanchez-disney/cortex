@@ -31,6 +31,7 @@ from atlas.schema import (
     Dependency,
     EndpointIndex,
     EntryPoint,
+    OutboundCall,
     RuntimeInfo,
     ServiceManifest,
     ServiceYaml,
@@ -94,6 +95,15 @@ class BackendJavaExtractor(Extractor):
         api_contracts = self.find_api_contracts(effective_root)
         entry_points = self._parse_entry_points(effective_root)
         kafka_topics = self._parse_kafka_topics(effective_root)
+        kafka_produces = self._parse_kafka_producers(effective_root)
+        kafka_consumes = self._parse_kafka_consumers(effective_root)
+        # Merge any topics not already in kafka_topics (backward compat union)
+        all_kafka_topic_names = set(kafka_topics)
+        for t in kafka_produces + kafka_consumes:
+            if t not in all_kafka_topic_names:
+                all_kafka_topic_names.add(t)
+                kafka_topics = kafka_topics + [t]
+        outbound_calls = self._parse_outbound_service_calls(effective_root)
         database_type, secondary_databases, flyway_count = self._parse_database_info(effective_root)
         cache_type = self._detect_cache_type(effective_root)
         runtime = self._detect_runtime(effective_root)
@@ -125,6 +135,9 @@ class BackendJavaExtractor(Extractor):
             framework=framework,
             flyway_migration_count=flyway_count,
             kafka_topics=kafka_topics,
+            kafka_produces=kafka_produces,
+            kafka_consumes=kafka_consumes,
+            outbound_calls=outbound_calls,
             database_type=database_type,
             secondary_databases=secondary_databases,
             cache_type=cache_type,
@@ -536,9 +549,13 @@ class BackendJavaExtractor(Extractor):
             endpoints.extend(file_endpoints)
 
         # Deduplicate by (method, path) — keep the first occurrence (retains summary/tags)
+        # Also filter Spring Actuator management endpoints (/actuator/*) — these are
+        # infrastructure endpoints, not public API surface.
         seen_ep: set[tuple[str | None, str | None]] = set()
         deduped: list[EndpointIndex] = []
         for ep in endpoints:
+            if ep.path and ep.path.startswith("/actuator"):
+                continue
             key = (ep.method, ep.path)
             if key not in seen_ep:
                 seen_ep.add(key)
@@ -1041,6 +1058,450 @@ class BackendJavaExtractor(Extractor):
                         topics.append(resolved)
                 elif isinstance(item, dict):
                     self._walk_yaml_for_topics(item, topics, seen, key_path)
+
+    def _scan_java_for_static_string_constants(self, root: Path) -> dict[str, str]:
+        """Scan Java source files for static final String constant declarations.
+
+        Returns a dict mapping qualified name (ClassName.CONSTANT or just CONSTANT) → value.
+        Used to resolve references like KafkaTopics.ORDER_CREATED in producer/consumer code.
+        Skips test directories and excluded directories.
+        """
+        constants: dict[str, str] = {}
+        for java_file in root.rglob("*.java"):
+            parts = java_file.parts
+            if any(part in _EXCLUDED_DIRS for part in parts):
+                continue
+            if any(part in _TEST_DIR_SEGMENTS for part in parts):
+                continue
+            try:
+                content = java_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            # Match: public static final String SOME_CONST = "value";
+            for m in re.finditer(
+                r"""public\s+static\s+final\s+String\s+(\w+)\s*=\s*["']([^"']+)["']""",
+                content,
+            ):
+                const_name = m.group(1)
+                const_value = m.group(2)
+                constants[const_name] = const_value
+
+                # Also try to extract class name for qualified lookup
+                class_m = re.search(
+                    r"(?:public\s+)?(?:final\s+)?class\s+(\w+)", content, re.MULTILINE
+                )
+                if class_m:
+                    qualified = f"{class_m.group(1)}.{const_name}"
+                    constants[qualified] = const_value
+
+        return constants
+
+    def _resolve_kafka_topic_ref(
+        self, raw: str, constants: dict[str, str], yaml_props: dict[str, str]
+    ) -> str | None:
+        """Resolve a raw topic reference to an actual topic name.
+
+        Handles:
+        - String literals: "topic-name" → "topic-name"
+        - Spring EL: "${kafka.topics.order-created}" → resolved via yaml_props
+        - Constant refs: "KafkaTopics.ORDER_SHIPPED" → resolved via constants map
+        - Plain env var: "${MY_TOPIC}" → returned as "MY_TOPIC" (no default)
+        """
+        raw = raw.strip().strip('"').strip("'")
+        if not raw:
+            return None
+
+        # Spring EL expression: resolve via YAML or existing resolver
+        if raw.startswith("${"):
+            inner_m = re.fullmatch(r"\$\{([^}]+)\}", raw.strip())
+            if inner_m:
+                inner = inner_m.group(1)
+                prop_key, _, default_value = inner.partition(":")
+
+                if default_value:
+                    # ${KEY:default} — use the embedded default directly
+                    return default_value
+
+                # ${KEY} with no default — try to resolve via flat YAML props first
+                if prop_key in yaml_props:
+                    return yaml_props[prop_key]
+
+                # Fall back to _resolve_spring_el_topic which returns the env var name
+                return self._resolve_spring_el_topic(raw)
+
+            # Malformed EL expression — fall through to plain string handling
+            return self._resolve_spring_el_topic(raw)
+
+        # Constant reference (e.g., KafkaTopics.ORDER_SHIPPED or ORDER_SHIPPED)
+        # Also handles @Value-injected field names (camelCase identifiers)
+        if raw in constants:
+            return constants[raw]
+        if "." in raw or raw.isupper():
+            # Try the last segment (e.g., MyClass.CONSTANT → look up CONSTANT)
+            last = raw.split(".")[-1]
+            if last in constants:
+                return constants[last]
+
+        # Plain string literal — return as-is if it looks like a topic name
+        # (contains hyphens/dots typical of Kafka topic naming conventions)
+        if re.match(r"^[a-zA-Z0-9._\-]+$", raw) and len(raw) > 3:
+            # Reject plain camelCase identifiers that are likely variable names,
+            # not actual topic strings. Topic names typically contain hyphens or dots.
+            # Only allow if it has a separator or is UPPER_SNAKE_CASE.
+            if "-" in raw or "." in raw or "_" in raw or raw.isupper():
+                return raw
+
+        return None
+
+    def _scan_value_injected_fields(self, root: Path) -> dict[str, str]:
+        """Scan Java source for @Value-annotated String fields and resolve them.
+
+        Handles patterns like:
+            @Value("${kafka.topics.order-created:order-created-topic}")
+            private String topicName;
+
+        Returns a dict mapping field name → resolved topic/value string.
+        Uses yaml_props for resolution when no default is present.
+        """
+        fields: dict[str, str] = {}
+        yaml_props = self._load_yaml_flat_props(root)
+
+        value_field_pattern = re.compile(
+            r'@Value\s*\(\s*["\']\$\{([^}]+)\}["\']\s*\)\s*'
+            r'(?:private\s+|protected\s+|public\s+)?'
+            r'(?:final\s+)?String\s+(\w+)\s*;',
+            re.DOTALL,
+        )
+
+        for java_file in root.rglob("*.java"):
+            if any(part in _EXCLUDED_DIRS for part in java_file.parts):
+                continue
+            if any(part in _TEST_DIR_SEGMENTS for part in java_file.parts):
+                continue
+            try:
+                content = java_file.read_text(errors="replace")
+            except OSError:
+                continue
+            if "@Value" not in content:
+                continue
+
+            for m in value_field_pattern.finditer(content):
+                el_expr = m.group(1)   # e.g. "kafka.topics.order-created:order-created-topic"
+                field_name = m.group(2)
+                prop_key, _, default_val = el_expr.partition(":")
+                if default_val:
+                    fields[field_name] = default_val
+                elif prop_key in yaml_props:
+                    fields[field_name] = yaml_props[prop_key]
+                # If no default and not in YAML, skip — unresolvable at static analysis time
+
+        return fields
+
+    def _parse_kafka_producers(self, root: Path) -> list[str]:
+        """Scan Java source and application.yml for Kafka producer patterns.
+
+        Detects:
+        1. kafkaTemplate.send("topic", ...) — string literal topic
+        2. kafkaTemplate.send(Constants.TOPIC, ...) — constant reference
+        3. kafkaTemplate.send(topicField, ...) — @Value-injected String field
+        4. new ProducerRecord<>(topicField, ...) where topicField is @Value-injected
+        5. @SendTo("topic") — reply topics on @KafkaListener methods
+
+        Skips kafkaTemplate.send(producerRecord, ...) where the first arg is a
+        ProducerRecord variable (detected by camelCase without dots/quotes and the
+        variable name matching a local ProducerRecord construction in the same file).
+        """
+        produces: list[str] = []
+        seen: set[str] = set()
+
+        # Build resolution helpers
+        constants = self._scan_java_for_static_string_constants(root)
+        yaml_props = self._load_yaml_flat_props(root)
+        value_fields = self._scan_value_injected_fields(root)
+        # Merge value_fields into constants so _resolve_kafka_topic_ref can use them
+        merged = {**constants, **value_fields}
+
+        # Pattern: kafkaTemplate.send(<arg>, ...)
+        # Argument can be a string literal, a constant ref, or a field/variable name
+        send_pattern = re.compile(
+            r"""kafkaTemplate\.send\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*[,)]""",
+        )
+        # Pattern to detect ProducerRecord variable names in the file
+        # e.g.: ProducerRecord<...> myVar = new ProducerRecord<>(...)
+        producer_record_var_pattern = re.compile(
+            r'ProducerRecord\s*(?:<[^>]*>)?\s+(\w+)\s*='
+        )
+        # Pattern for new ProducerRecord<>(topicArg, ...) to extract topic arg
+        producer_record_ctor_pattern = re.compile(
+            r'new\s+ProducerRecord\s*(?:<[^>]*>)?\s*\(\s*(["\']\S+["\']|[\w.]+)\s*[,)]'
+        )
+        # Pattern: @SendTo("topic") or @SendTo({"topic1", "topic2"})
+        sendto_pattern = re.compile(
+            r"""@SendTo\(\s*(?:\{)?["']([^"']+)["']""",
+        )
+
+        for java_file in root.rglob("*.java"):
+            parts = java_file.parts
+            if any(part in _EXCLUDED_DIRS for part in parts):
+                continue
+            if any(part in _TEST_DIR_SEGMENTS for part in parts):
+                continue
+            try:
+                content = java_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            if "kafkaTemplate" not in content and "@SendTo" not in content:
+                continue
+
+            # Collect names of ProducerRecord variables in this file so we can skip them
+            # when they appear as the first arg to kafkaTemplate.send()
+            producer_record_vars = set(producer_record_var_pattern.findall(content))
+
+            # Extract topics from new ProducerRecord<>(topicArg, ...) ctors
+            for m in producer_record_ctor_pattern.finditer(content):
+                raw = m.group(1)
+                resolved = self._resolve_kafka_topic_ref(raw, merged, yaml_props)
+                if resolved and resolved not in seen:
+                    seen.add(resolved)
+                    produces.append(resolved)
+
+            for m in send_pattern.finditer(content):
+                raw = m.group(1)
+                # Skip ProducerRecord variables — topic already extracted from ctor above
+                raw_stripped = raw.strip().strip('"').strip("'")
+                if raw_stripped in producer_record_vars:
+                    continue
+                resolved = self._resolve_kafka_topic_ref(raw, merged, yaml_props)
+                if resolved and resolved not in seen:
+                    seen.add(resolved)
+                    produces.append(resolved)
+
+            for m in sendto_pattern.finditer(content):
+                topic = m.group(1).strip()
+                resolved = self._resolve_kafka_topic_ref(topic, merged, yaml_props)
+                if resolved and resolved not in seen:
+                    seen.add(resolved)
+                    produces.append(resolved)
+
+        return produces
+
+    def _parse_kafka_consumers(self, root: Path) -> list[str]:
+        """Scan Java source files for @KafkaListener(topics=...) annotations.
+
+        Detects:
+        1. @KafkaListener(topics = "topic-name") — string literal
+        2. @KafkaListener(topics = "${kafka.topics.order-created}") — Spring EL
+        3. @KafkaListener(topics = {TopicConstants.A, TopicConstants.B}) — constant array
+        4. @KafkaListener(topics = {"topic1", "topic2"}) — string array
+        """
+        consumes: list[str] = []
+        seen: set[str] = set()
+
+        constants = self._scan_java_for_static_string_constants(root)
+        yaml_props = self._load_yaml_flat_props(root)
+
+        # Match topics=... in @KafkaListener
+        # Handles: topics = "x", topics = {"x","y"}, topics = ${...}, topics = Const.TOPIC
+        topics_pattern = re.compile(
+            r"""@KafkaListener\s*\([^)]*topics\s*=\s*(\{[^}]+\}|["'][^"']+["']|\$\{[^}]+\}|[\w.]+)""",
+            re.DOTALL,
+        )
+
+        for java_file in root.rglob("*.java"):
+            parts = java_file.parts
+            if any(part in _EXCLUDED_DIRS for part in parts):
+                continue
+            if any(part in _TEST_DIR_SEGMENTS for part in parts):
+                continue
+            try:
+                content = java_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            if "@KafkaListener" not in content:
+                continue
+
+            for m in topics_pattern.finditer(content):
+                topics_arg = m.group(1).strip()
+                # Could be an array: {"topic1", TopicConst.TOPIC2}
+                if topics_arg.startswith("{"):
+                    inner = topics_arg[1:-1]
+                    # Split on commas (that aren't inside strings)
+                    for part in re.split(r",\s*", inner):
+                        part = part.strip()
+                        resolved = self._resolve_kafka_topic_ref(part, constants, yaml_props)
+                        if resolved and resolved not in seen:
+                            seen.add(resolved)
+                            consumes.append(resolved)
+                else:
+                    resolved = self._resolve_kafka_topic_ref(topics_arg, constants, yaml_props)
+                    if resolved and resolved not in seen:
+                        seen.add(resolved)
+                        consumes.append(resolved)
+
+        return consumes
+
+    def _load_yaml_flat_props(self, root: Path) -> dict[str, str]:
+        """Load application.yml as a flat dict of dot-notation key → string value.
+
+        Used for resolving ${spring.el.property} references in Java source.
+        E.g., "kafka.topics.order-created" → "demo.orders.created"
+        """
+        flat: dict[str, str] = {}
+
+        for yml_file in root.rglob("application*.yml"):
+            if any(part in _EXCLUDED_DIRS for part in yml_file.parts):
+                continue
+            try:
+                content = yml_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            try:
+                import yaml
+
+                data = yaml.safe_load(content)
+                if isinstance(data, dict):
+                    self._flatten_yaml(data, "", flat)
+            except Exception:
+                pass
+
+        return flat
+
+    def _flatten_yaml(self, data: dict | list | str, prefix: str, flat: dict[str, str]) -> None:
+        """Recursively flatten a YAML dict into dot-notation keys."""
+        if isinstance(data, dict):
+            for key, value in data.items():
+                child_key = f"{prefix}.{key}" if prefix else str(key)
+                self._flatten_yaml(value, child_key, flat)
+        elif isinstance(data, str):
+            flat[prefix] = data
+        elif isinstance(data, (int, float, bool)):
+            flat[prefix] = str(data)
+
+    def _parse_outbound_service_calls(self, root: Path) -> list[OutboundCall]:
+        """Scan application.yml and Java source for outbound HTTP service calls.
+
+        Phase A — Config scanning (application.yml):
+            Looks for keys matching *.base-url, *.url, *.host, *.endpoint, *.uri
+            that contain HTTP URL values, excluding known infrastructure URLs
+            (JDBC, Kafka bootstrap, Cosmos endpoints, Redis hosts, Azure App Config).
+
+        Phase B — Java source scanning:
+            Looks for WebClient.builder().baseUrl() patterns and @Value injection
+            to confirm and link config keys to service calls.
+
+        Returns a list of OutboundCall objects with target_url and config_key set.
+        """
+        calls: list[OutboundCall] = []
+        seen_keys: set[str] = set()
+
+        # URL-like keys in YAML config
+        url_key_pattern = re.compile(
+            r"(?:base[_-]?url|\.url|\.host|\.endpoint|\.uri)$",
+            re.IGNORECASE,
+        )
+
+        # Excluded URL patterns (infrastructure, not services)
+        excluded_url_patterns = [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"^jdbc:",
+                r"localhost",
+                r"kafka\.bootstrap",
+                r"bootstrap[_-]servers",
+                r"\.documents\.azure\.com",
+                r"documents\.azure",
+                r"blob[_-]?storage",     # Azure Blob Storage URLs/config keys
+                r"\.blob\.core\.windows",
+                r"blob\.core",
+                r"redis",
+                r"appconfig\.azure",
+                r"app-configuration",
+                r"application-configuration",
+            ]
+        ]
+
+        def _is_excluded_url(url: str) -> bool:
+            return any(p.search(url) for p in excluded_url_patterns)
+
+        # Load YAML config and scan for URL keys
+        flat_props = self._load_yaml_flat_props(root)
+        for key, value in flat_props.items():
+            if not url_key_pattern.search(key):
+                continue
+            if not value.startswith(("http://", "https://", "${", "http")):
+                # Also allow Spring EL like ${SOME_URL:https://...}
+                resolved = self._resolve_spring_el_topic(value)
+                if not resolved.startswith(("http://", "https://")):
+                    continue
+                value = resolved
+
+            if _is_excluded_url(value) or _is_excluded_url(key):
+                continue
+
+            if key not in seen_keys:
+                seen_keys.add(key)
+                calls.append(
+                    OutboundCall(
+                        target_url=value if value.startswith("http") else None,
+                        config_key=key,
+                        protocol="http",
+                    )
+                )
+
+        # Phase B: scan Java source for WebClient.builder().baseUrl() patterns
+        # to find additional URL references not in YAML
+        webclient_pattern = re.compile(
+            r"""WebClient\.builder\(\)\s*\.baseUrl\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*\)""",
+        )
+
+        for java_file in root.rglob("*.java"):
+            parts = java_file.parts
+            if any(part in _EXCLUDED_DIRS for part in parts):
+                continue
+            if any(part in _TEST_DIR_SEGMENTS for part in parts):
+                continue
+            try:
+                content = java_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            if "WebClient" not in content:
+                continue
+
+            for m in webclient_pattern.finditer(content):
+                raw = m.group(1).strip().strip('"').strip("'")
+                if raw.startswith("${"):
+                    # Resolve from flat props
+                    inner = re.fullmatch(r"\$\{([^}]+)\}", raw)
+                    if inner:
+                        prop_key = inner.group(1).split(":")[0]
+                        if prop_key in flat_props:
+                            url_value = flat_props[prop_key]
+                            if prop_key not in seen_keys and not _is_excluded_url(url_value):
+                                seen_keys.add(prop_key)
+                                calls.append(
+                                    OutboundCall(
+                                        target_url=url_value if url_value.startswith("http") else None,
+                                        config_key=prop_key,
+                                        protocol="http",
+                                    )
+                                )
+                elif raw.startswith("http"):
+                    if raw not in seen_keys and not _is_excluded_url(raw):
+                        seen_keys.add(raw)
+                        calls.append(
+                            OutboundCall(
+                                target_url=raw,
+                                config_key=None,
+                                protocol="http",
+                            )
+                        )
+
+        return calls
 
     def _parse_database_info(self, root: Path) -> tuple[str | None, list[str], int | None]:
         """Detect primary/secondary databases and count Flyway migrations.

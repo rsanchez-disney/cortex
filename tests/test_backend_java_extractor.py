@@ -1345,3 +1345,422 @@ class TestMapNotationDeps:
         assert "com.example.internal:internal-lib" in dep_names
         internal = next(d for d in deps if d.name == "com.example.internal:internal-lib")
         assert internal.version == "1.2.3"
+
+
+# ---------------------------------------------------------------------------
+# TestKafkaProducerConsumerExtraction
+# ---------------------------------------------------------------------------
+
+
+class TestKafkaProducerConsumerExtraction:
+    """Tests for _parse_kafka_producers() and _parse_kafka_consumers()."""
+
+    def test_kafka_producer_detected_from_template_send(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """kafkaTemplate.send('topic', ...) → topic appears in kafka_produces."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "MyPublisher.java").write_text(
+            'package com.example;\n'
+            'public class MyPublisher {\n'
+            '    void publish() { kafkaTemplate.send("my.test.topic", "data"); }\n'
+            '}\n'
+        )
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "my.test.topic" in produces
+
+    def test_kafka_producer_detected_from_constant_ref(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """kafkaTemplate.send(Topics.MY_TOPIC, ...) + constant class → resolved in kafka_produces."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "TopicConsts.java").write_text(
+            'package com.example;\n'
+            'public final class TopicConsts {\n'
+            '    public static final String MY_TOPIC = "my.resolved.topic";\n'
+            '}\n'
+        )
+        (src / "MyPublisher.java").write_text(
+            'package com.example;\n'
+            'public class MyPublisher {\n'
+            '    void publish() { kafkaTemplate.send(TopicConsts.MY_TOPIC, "data"); }\n'
+            '}\n'
+        )
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "my.resolved.topic" in produces
+
+    def test_kafka_consumer_detected_from_annotation(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@KafkaListener(topics = 'topic') → topic appears in kafka_consumes."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "MyConsumer.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.kafka.annotation.KafkaListener;\n'
+            'public class MyConsumer {\n'
+            '    @KafkaListener(topics = "direct.string.topic", groupId = "g")\n'
+            '    public void consume(String msg) {}\n'
+            '}\n'
+        )
+        consumes = extractor._parse_kafka_consumers(tmp_path)
+        assert "direct.string.topic" in consumes
+
+    def test_kafka_consumer_detected_from_spring_el(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@KafkaListener(topics = '${key}') resolved via application.yml."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "kafka:\n  topics:\n    orders: my.orders.topic\n"
+        )
+        (src / "MyConsumer.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.kafka.annotation.KafkaListener;\n'
+            'public class MyConsumer {\n'
+            '    @KafkaListener(topics = "${kafka.topics.orders}", groupId = "g")\n'
+            '    public void consume(String msg) {}\n'
+            '}\n'
+        )
+        consumes = extractor._parse_kafka_consumers(tmp_path)
+        assert "my.orders.topic" in consumes
+
+    def test_fixture_has_producers_and_consumers(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """The sample fixture produces and consumes known topics."""
+        produces = extractor._parse_kafka_producers(SAMPLE_BACKEND_JAVA_REPO)
+        consumes = extractor._parse_kafka_consumers(SAMPLE_BACKEND_JAVA_REPO)
+
+        # OrderEventPublisher publishes to demo.orders.created (via Spring EL resolved)
+        # and demo.orders.shipped (via OrderTopics.ORDER_SHIPPED constant)
+        assert "demo.orders.shipped" in produces
+
+        # OrderEventListener consumes demo.orders.created (Spring EL) and
+        # demo.orders.cancelled (direct string)
+        assert "demo.orders.cancelled" in consumes
+
+    def test_manifest_has_kafka_produces_and_consumes(
+        self, extractor: BackendJavaExtractor, service_yaml: ServiceYaml
+    ) -> None:
+        """Full extraction manifest includes kafka_produces and kafka_consumes fields."""
+        with patch.object(extractor, "_get_source_repo", return_value=None):
+            manifest = extractor.extract(SAMPLE_BACKEND_JAVA_REPO, service_yaml)
+        assert isinstance(manifest.kafka_produces, list)
+        assert isinstance(manifest.kafka_consumes, list)
+        # At minimum the constant-ref topic should be detected
+        assert "demo.orders.shipped" in manifest.kafka_produces
+        assert "demo.orders.cancelled" in manifest.kafka_consumes
+
+    def test_kafka_topics_backward_compat(
+        self, extractor: BackendJavaExtractor, service_yaml: ServiceYaml
+    ) -> None:
+        """kafka_topics still populated as the union of all topics (backward compat)."""
+        with patch.object(extractor, "_get_source_repo", return_value=None):
+            manifest = extractor.extract(SAMPLE_BACKEND_JAVA_REPO, service_yaml)
+        # kafka_topics must be a superset of kafka_produces + kafka_consumes
+        all_detected = set(manifest.kafka_produces) | set(manifest.kafka_consumes)
+        for topic in all_detected:
+            assert topic in manifest.kafka_topics, (
+                f"Topic '{topic}' in produces/consumes but missing from kafka_topics"
+            )
+
+    def test_test_dirs_excluded_from_producer_scan(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Test directory Java files are not scanned for Kafka producers."""
+        test_src = tmp_path / "src" / "test" / "java" / "com" / "example"
+        test_src.mkdir(parents=True)
+        (test_src / "TestPublisher.java").write_text(
+            'package com.example;\n'
+            'public class TestPublisher {\n'
+            '    void t() { kafkaTemplate.send("test.only.topic", "x"); }\n'
+            '}\n'
+        )
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "test.only.topic" not in produces
+
+    def test_test_dirs_excluded_from_consumer_scan(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Test directory Java files are not scanned for Kafka consumers."""
+        test_src = tmp_path / "src" / "test" / "java" / "com" / "example"
+        test_src.mkdir(parents=True)
+        (test_src / "TestConsumer.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.kafka.annotation.KafkaListener;\n'
+            'public class TestConsumer {\n'
+            '    @KafkaListener(topics = "test.only.topic")\n'
+            '    public void consume(String msg) {}\n'
+            '}\n'
+        )
+        consumes = extractor._parse_kafka_consumers(tmp_path)
+        assert "test.only.topic" not in consumes
+
+
+# ---------------------------------------------------------------------------
+# TestOutboundServiceCalls
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundServiceCalls:
+    """Tests for _parse_outbound_service_calls() (WebClient/HTTP outbound detection)."""
+
+    def test_webclient_base_url_from_config(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """application.yml with services.identity.base-url → detected as outbound call."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "services:\n  identity:\n    base-url: https://identity-service.internal\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        assert len(calls) >= 1
+        urls = [c.target_url for c in calls]
+        assert "https://identity-service.internal" in urls
+
+    def test_webclient_bean_with_qualifier(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Bean WebClient with @Value injection detected via YAML + Java source."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "services:\n  rewards:\n    base-url: https://rewards-service.internal\n"
+        )
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "WebClientConfig.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.web.reactive.function.client.WebClient;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'public class WebClientConfig {\n'
+            '    public WebClient rewardsWebClient(@Value("${services.rewards.base-url}") String url) {\n'
+            '        return WebClient.builder().baseUrl(url).build();\n'
+            '    }\n'
+            '}\n'
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        assert len(calls) >= 1
+        urls = [c.target_url for c in calls]
+        assert "https://rewards-service.internal" in urls
+
+    def test_excludes_database_urls(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """JDBC URLs are not treated as outbound service calls."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n  datasource:\n    url: jdbc:postgresql://localhost:5432/mydb\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        jdbc_calls = [c for c in calls if c.target_url and "jdbc" in c.target_url]
+        assert len(jdbc_calls) == 0
+
+    def test_excludes_kafka_bootstrap_servers(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Kafka bootstrap server URLs are not treated as outbound service calls."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n  kafka:\n    bootstrap-servers: kafka-broker:9092\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        kafka_calls = [c for c in calls if c.target_url and "kafka" in (c.target_url or "").lower()]
+        assert len(kafka_calls) == 0
+
+    def test_fixture_detects_rewards_service_call(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """SAMPLE_BACKEND_JAVA_REPO fixture detects rewards service outbound call."""
+        calls = extractor._parse_outbound_service_calls(SAMPLE_BACKEND_JAVA_REPO)
+        urls = [c.target_url for c in calls]
+        assert "https://rewards-service.internal" in urls
+
+    def test_manifest_has_outbound_calls(
+        self, extractor: BackendJavaExtractor, service_yaml: ServiceYaml
+    ) -> None:
+        """Full extraction produces manifest with outbound_calls field."""
+        with patch.object(extractor, "_get_source_repo", return_value=None):
+            manifest = extractor.extract(SAMPLE_BACKEND_JAVA_REPO, service_yaml)
+        assert isinstance(manifest.outbound_calls, list)
+        # Fixture has rewards service call
+        urls = [c.target_url for c in manifest.outbound_calls]
+        assert "https://rewards-service.internal" in urls
+
+
+# ---------------------------------------------------------------------------
+# TestValueInjectedKafkaProducers
+# ---------------------------------------------------------------------------
+
+
+class TestValueInjectedKafkaProducers:
+    """Tests for Kafka producer resolution via @Value-injected String fields."""
+
+    def test_value_injected_field_with_default_resolved(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Value("${key:default-topic}") String field → ProducerRecord<>(field) produces default."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "EventPublisher.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'import org.springframework.kafka.core.KafkaTemplate;\n'
+            'import org.apache.kafka.clients.producer.ProducerRecord;\n'
+            'public class EventPublisher {\n'
+            '    @Value("${kafka.topic.events:order-events-topic}")\n'
+            '    private String topicName;\n'
+            '    void publish() {\n'
+            '        ProducerRecord<String,String> rec = new ProducerRecord<>(topicName, "data");\n'
+            '        kafkaTemplate.send(rec);\n'
+            '    }\n'
+            '}\n'
+        )
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "order-events-topic" in produces
+
+    def test_producer_record_variable_not_captured_as_topic(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """kafkaTemplate.send(producerRecord) where producerRecord is a ProducerRecord var
+        should NOT capture the variable name 'producerRecord' as a topic string."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "MyPublisher.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'import org.apache.kafka.clients.producer.ProducerRecord;\n'
+            'public class MyPublisher {\n'
+            '    @Value("${kafka.topic.events:real-topic-name}")\n'
+            '    private String topicField;\n'
+            '    void publish() {\n'
+            '        ProducerRecord<String,String> producerRecord = new ProducerRecord<>(topicField, "x");\n'
+            '        kafkaTemplate.send(producerRecord);\n'
+            '    }\n'
+            '}\n'
+        )
+        produces = extractor._parse_kafka_producers(tmp_path)
+        # The ProducerRecord variable name should NOT appear as a topic
+        assert "producerRecord" not in produces
+        # But the actual topic from ProducerRecord constructor should be found
+        assert "real-topic-name" in produces
+
+    def test_value_injected_field_resolved_from_yaml(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Value("${kafka.topic.orders}") field (no default) resolved via application.yml."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "kafka:\n  topic:\n    orders: production.orders.created\n"
+        )
+        (src / "OrderPublisher.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'public class OrderPublisher {\n'
+            '    @Value("${kafka.topic.orders}")\n'
+            '    private String ordersTopic;\n'
+            '    void publish() {\n'
+            '        kafkaTemplate.send(ordersTopic, "order-data");\n'
+            '    }\n'
+            '}\n'
+        )
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "production.orders.created" in produces
+
+    def test_scan_value_injected_fields_returns_field_map(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """_scan_value_injected_fields returns dict of fieldName → resolved value."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "Config.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'public class Config {\n'
+            '    @Value("${kafka.topic.a:topic-alpha}")\n'
+            '    private String topicA;\n'
+            '    @Value("${kafka.topic.b:topic-beta}")\n'
+            '    private String topicB;\n'
+            '}\n'
+        )
+        fields = extractor._scan_value_injected_fields(tmp_path)
+        assert fields.get("topicA") == "topic-alpha"
+        assert fields.get("topicB") == "topic-beta"
+
+
+# ---------------------------------------------------------------------------
+# TestActuatorEndpointFiltering
+# ---------------------------------------------------------------------------
+
+
+class TestActuatorEndpointFiltering:
+    """Tests for /actuator/* endpoint filtering from api_contracts."""
+
+    def test_actuator_endpoints_excluded_from_contracts(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Spring Actuator endpoints (/actuator/*) are filtered from api_contracts."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        # A regular controller
+        (src / "OrderController.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.web.bind.annotation.*;\n'
+            '@RestController\n'
+            '@RequestMapping("/v1/orders")\n'
+            'public class OrderController {\n'
+            '    @GetMapping\n'
+            '    public String list() { return "ok"; }\n'
+            '}\n'
+        )
+        # An actuator-style controller (should be filtered)
+        (src / "ActuatorController.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.web.bind.annotation.*;\n'
+            '@RestController\n'
+            '@RequestMapping("/actuator")\n'
+            'public class ActuatorController {\n'
+            '    @GetMapping("/health")\n'
+            '    public String health() { return "UP"; }\n'
+            '    @GetMapping("/info")\n'
+            '    public String info() { return "{}"; }\n'
+            '}\n'
+        )
+        contracts = extractor.find_api_contracts(tmp_path)
+        all_paths = [ep.path for c in contracts for ep in c.endpoints]
+        # Real endpoint should be present
+        assert any(p and p.startswith("/v1/orders") for p in all_paths)
+        # Actuator endpoints should be filtered out
+        assert not any(p and p.startswith("/actuator") for p in all_paths)
+
+    def test_non_actuator_endpoints_not_filtered(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Endpoints starting with /actualization (similar prefix) are NOT filtered."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "ActualizationController.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.web.bind.annotation.*;\n'
+            '@RestController\n'
+            '@RequestMapping("/actualization")\n'
+            'public class ActualizationController {\n'
+            '    @GetMapping("/status")\n'
+            '    public String status() { return "ok"; }\n'
+            '}\n'
+        )
+        contracts = extractor.find_api_contracts(tmp_path)
+        all_paths = [ep.path for c in contracts for ep in c.endpoints]
+        assert any(p and p.startswith("/actualization") for p in all_paths)
