@@ -124,3 +124,11 @@ repos:
     domain: ticketing
     tier: critical
     purpose: Ticketing management, seat inventory, reservations, event access
+
+  - name: locations-microservice
+    url: https://dev.azure.com/IntuitDome/locations-microservice/_git/locations-microservice
+    type: backend-java
+    owner: team-backend
+    domain: locations
+    tier: critical
+    purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP device management, IoT device twins sync
