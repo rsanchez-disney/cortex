@@ -12,7 +12,7 @@ Platform Atlas extracts structured metadata from source repositories, aggregates
 
 ### Three components
 
-1. **Extractor** (`atlas` CLI) — Parses `service.yaml`, build files, and manifests from each repo to produce normalized per-service metadata.
+1. **Extractor** (`atlas` CLI) — Parses build files, manifests, and source code from each repo (using service metadata from the repos config) to produce normalized per-service metadata.
 2. **Pipeline** — Azure DevOps scheduled job that runs extraction across all repos and writes results to cloud storage.
 3. **MCP Server** — Exposes 4 query tools over the aggregated graph for consumption by AI agents.
 
@@ -50,10 +50,18 @@ Edit `config/repos-local.yaml` to point at your local repo clones:
 repos:
   - name: mobile-banking-android
     path: /Users/you/projects/mobile-banking-android
-    type_hint: android
+    type: android
+    owner: team-mobile
+    domain: payments
+    tier: critical
+    purpose: Main Android banking app
   - name: mobile-banking-ios
     path: /Users/you/projects/mobile-banking-ios
-    type_hint: ios
+    type: ios
+    owner: team-mobile
+    domain: payments
+    tier: critical
+    purpose: Main iOS banking app
 ```
 
 ```bash
@@ -68,7 +76,11 @@ For repos not cloned locally, use URL entries with `AZURE_PAT`:
 repos:
   - name: mobile-banking-ios
     url: https://dev.azure.com/org/project/_git/mobile-banking-ios
-    type_hint: ios
+    type: ios
+    owner: team-mobile
+    domain: payments
+    tier: critical
+    purpose: Main iOS banking app
 ```
 
 ```bash
@@ -85,11 +97,12 @@ uv run atlas mcp-server --mode stdio --storage-backend local --storage-bucket ./
 ### Individual Commands
 
 ```bash
-# Validate a service.yaml
-uv run atlas validate --file path/to/service.yaml
-
-# Extract a single repo
-uv run atlas extract --repo-path ./my-repo --repo-name my-repo --storage-backend local --storage-bucket ./output
+# Extract a single repo (all service metadata passed as CLI flags)
+uv run atlas extract \
+  --repo-path ./my-repo --repo-name my-repo \
+  --storage-backend local --storage-bucket ./output \
+  --type android --owner team-mobile --domain payments \
+  --tier critical --purpose "Main banking app"
 
 # Aggregate all manifests into a graph
 uv run atlas aggregate --storage-backend local --storage-bucket ./output
@@ -125,8 +138,8 @@ AI Agents
 
 ### Data Flow
 
-1. Each repo has a `service.yaml` declaring its type, owner, domain, and purpose.
-2. The extractor reads `service.yaml` + ecosystem-specific files (build.gradle, Package.swift, etc.).
+1. Service metadata (type, owner, domain, purpose, etc.) is declared in the repos config YAML — no `service.yaml` is needed in target repos.
+2. The extractor reads ecosystem-specific files (build.gradle, Package.swift, pom.xml, etc.) from each repo.
 3. Output: normalized `manifest.json` per repo.
 4. The aggregator merges all manifests into `graph/latest.json`.
 5. The MCP server reads the graph and serves queries.
@@ -134,14 +147,15 @@ AI Agents
 ## Adding a New Repo
 
 1. Add an entry to `config/repos.yaml` (for pipeline) or `config/repos-local.yaml` (for local dev).
-2. Ensure the repo has a valid `service.yaml` at its root with the required `type` field.
-3. Run `uv run atlas validate --file path/to/service.yaml` to check it.
+2. Include all required service metadata fields inline in the config entry.
+3. Run `uv run atlas run-local` to verify extraction succeeds.
 
-### service.yaml Required Fields
+### Required Fields per Config Entry
 
 ```yaml
 name: my-service              # kebab-case, unique
-type: android                 # android | ios | backend-go | backend-node | web-react
+path: /path/to/repo           # OR url: https://dev.azure.com/...
+type: android                 # android | ios | backend-java
 owner: team-name
 domain: mobile                # high-level area (payments, identity, etc.)
 tier: standard                # critical | standard | experimental | deprecated
@@ -149,7 +163,9 @@ purpose: >
   One to three sentences describing the service.
 ```
 
-See `schemas/service.schema.json` for the full schema including optional fields.
+Optional fields: `status`, `slack`, `runbook`, `jira_component`, `keywords`, `integration_notes`, `extractor_hints`, `branch`.
+
+See `schemas/service.schema.json` for the full schema.
 
 ## Supported Extractors
 
@@ -157,8 +173,9 @@ See `schemas/service.schema.json` for the full schema including optional fields.
 |---|---|---|---|---|
 | `android` | .kt/.java counts | build.gradle(.kts), libs.versions.toml | SDK versions, applicationId | AndroidManifest.xml (permissions, activities) |
 | `ios` | .swift/.m counts | Package.swift, Podfile, Cartfile | Swift version, bundle ID, deployment target | Info.plist, *.entitlements |
+| `backend-java` | .java/.kt counts | pom.xml, build.gradle | Spring Boot version, Java version | API endpoints, Kafka topics, outbound calls, database config |
 
-Backend extractors (Go, Node, React) are deferred until microservice access is available.
+Other backend extractors (Go, Node, React) are deferred.
 
 ## MCP Server Tools
 
@@ -213,10 +230,9 @@ uv run pytest tests/test_android_extractor.py -v
 
 ### Extraction fails for a repo
 
-1. Check that `service.yaml` exists and has all required fields (including `type`).
-2. Run `uv run atlas validate --file path/to/service.yaml` to validate it.
-3. Check the extractor supports the declared `type` (currently: `android`, `ios`).
-4. Check `services/{name}/extraction-error.json` for the specific error.
+1. Check the repos config entry has all required fields (`name`, `type`, `owner`, `domain`, `tier`, `purpose`).
+2. Check the extractor supports the declared `type` (currently: `android`, `ios`, `backend-java`).
+3. Check `services/{name}/extraction-error.json` for the specific error.
 
 ### Graph is stale
 
@@ -239,8 +255,8 @@ If you see `"AZURE_PAT environment variable required for cloning repo..."`:
 
 ### New repo not appearing in graph
 
-1. Verify the entry in `config/repos.yaml` or `config/repos-local.yaml`.
-2. Ensure `service.yaml` is at the repo root with a valid `type` field.
+1. Verify the entry in `config/repos.yaml` or `config/repos-local.yaml` has all required fields.
+2. Ensure the `type` matches a registered extractor (`android`, `ios`, `backend-java`).
 3. Run `atlas run-local` and check for errors in the output.
 
 ## Project Structure
@@ -251,18 +267,19 @@ memory-hub/
 ├── src/atlas/
 │   ├── cli.py              # CLI entry point (typer)
 │   ├── schema.py            # Pydantic models
-│   ├── validation.py        # service.yaml validation
+│   ├── validation.py        # Service metadata validation
 │   ├── storage.py           # Storage backend (local + GCS)
 │   ├── aggregator.py        # Graph aggregation
 │   └── extractors/
 │       ├── base.py          # Abstract extractor
 │       ├── android.py       # Android extractor
-│       └── ios.py           # iOS extractor
+│       ├── ios.py           # iOS extractor
+│       └── backend_java.py  # Backend Java (Spring Boot) extractor
 ├── mcp_server/
 │   ├── server.py            # MCP server (4 tools)
 │   └── tests/
 ├── tests/
-│   ├── fixtures/            # Sample repos for testing
+│   ├── fixtures/            # Sample repos for testing (android, ios, ios-multitarget, backend-java)
 │   ├── test_*.py
 ├── schemas/                 # JSON Schemas
 ├── config/                  # Repo registry configs
@@ -275,4 +292,4 @@ memory-hub/
 2. **MCP deployment target:** Cloud Run recommended for parity with existing infrastructure.
 3. **Secret management:** Azure Key Vault configured. GCP Secret Manager is an alternative.
 4. **Monorepo support:** If any repos contain multiple services, the schema would need a `services:` array variant.
-5. **Source repo CI enforcement:** A shared GitHub Action / Azure template for `service.yaml` validation in source repos is a useful follow-up.
+5. **Repos config CI enforcement:** A shared GitHub Action / Azure template for validating repos config entries is a useful follow-up.

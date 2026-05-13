@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-Platform Atlas extracts structured architectural metadata from Android and iOS repositories, aggregates it into a queryable graph, and exposes it to AI agents via an MCP server. It is a Python CLI tool (`atlas`) with a separate MCP server component.
+Platform Atlas extracts structured architectural metadata from Android, iOS, and backend Java (Spring Boot) repositories, aggregates it into a queryable graph, and exposes it to AI agents via an MCP server. It is a Python CLI tool (`atlas`) with a separate MCP server component.
 
 ## Setup
 
@@ -30,14 +30,17 @@ memory-hub/
 │       ├── __init__.py          # Extractor registry (type → class)
 │       ├── base.py              # Abstract Extractor base class
 │       ├── android.py           # Android extractor
-│       └── ios.py               # iOS extractor
+│       ├── ios.py               # iOS extractor
+│       └── backend_java.py     # Backend Java (Spring Boot) extractor
 ├── mcp_server/
 │   ├── server.py               # MCP server with 4 tools (FastMCP)
 │   └── tests/
 ├── tests/
 │   ├── fixtures/               # Sample repos for testing
 │   │   ├── sample-android-repo/
-│   │   └── sample-ios-repo/
+│   │   ├── sample-ios-repo/
+│   │   ├── sample-ios-multitarget-repo/
+│   │   └── sample-backend-java-repo/
 │   ├── conftest.py
 │   └── test_*.py
 ├── schemas/                    # JSON Schema files
@@ -57,7 +60,7 @@ memory-hub/
 Run these commands from the project root to verify changes:
 
 ```bash
-# 1. Run the full test suite (86 tests)
+# 1. Run the full test suite
 uv run pytest tests/ mcp_server/tests/ -v
 
 # 2. Run with coverage (must stay above 75%)
@@ -74,13 +77,14 @@ If adding a new extractor or modifying an existing one, also run the specific ex
 ```bash
 uv run pytest tests/test_android_extractor.py -v
 uv run pytest tests/test_ios_extractor.py -v
+uv run pytest tests/test_backend_java_extractor.py -v
 ```
 
 ## Key Design Decisions
 
 1. **No auto-detection (`detect.py` does not exist).** The `type` field in the repos config is the sole source of truth for repo type. The extractor registry in `src/atlas/extractors/__init__.py` maps type → extractor class. If a type has no registered extractor, extraction fails with a clear error.
 
-2. **No Go extractor, no OpenAPI parser.** Only `android` and `ios` extractors are implemented. Backend extractors are deferred.
+2. **No Go extractor.** `android`, `ios`, and `backend-java` (Spring Boot) extractors are implemented. Other backend types (Go, Node, React) are deferred.
 
 3. **No Azure Blob storage.** Only `local` and `gcs` storage backends exist.
 
@@ -182,9 +186,12 @@ repos:
 - `schemas/manifest.schema.json` — Defines the contract for `manifest.json` (output)
 - `src/atlas/schema.py` — Pydantic v2 models matching both schemas. Key models:
   - `ServiceYaml` — validated service metadata (sourced from repos config, not a file)
-  - `ServiceManifest` — extractor output
+  - `ServiceManifest` — extractor output (includes backend-Java-specific fields like `spring_boot_version`, `java_version`, `kafka_topics`, `outbound_calls`, `api_calls`, etc.)
   - `PlatformGraph` — aggregated graph
   - `ExtractionError` — error record for failed extractions
+  - `OutboundCall` / `ApiCall` — HTTP call metadata extracted from backend code
+  - `ServiceEdge` / `CommunicationGraph` — inter-service communication graph
+  - `ModuleInfo` — multi-module project structure metadata
 
 When modifying schemas, update **both** the JSON Schema file and the corresponding Pydantic model in `schema.py`. They must stay in sync.
 
