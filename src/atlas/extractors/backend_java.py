@@ -1125,7 +1125,12 @@ class BackendJavaExtractor(Extractor):
 
                 # ${KEY} with no default — try to resolve via flat YAML props first
                 if prop_key in yaml_props:
-                    return yaml_props[prop_key]
+                    yaml_val = yaml_props[prop_key]
+                    # YAML value may itself be a Spring EL expression (e.g. ${ENV:default})
+                    # Resolve it a second time to extract the concrete topic name.
+                    if yaml_val.startswith("${"):
+                        return self._resolve_spring_el_topic(yaml_val)
+                    return yaml_val
 
                 # Fall back to _resolve_spring_el_topic which returns the env var name
                 return self._resolve_spring_el_topic(raw)
@@ -1193,10 +1198,23 @@ class BackendJavaExtractor(Extractor):
                 if default_val:
                     fields[field_name] = default_val
                 elif prop_key in yaml_props:
-                    fields[field_name] = yaml_props[prop_key]
+                    yaml_val = yaml_props[prop_key]
+                    # YAML value may itself be a Spring EL expression (e.g. ${ENV:default})
+                    # Resolve it to extract the concrete value.
+                    if yaml_val.startswith("${"):
+                        yaml_val = self._resolve_spring_el_topic(yaml_val)
+                    fields[field_name] = yaml_val
                 # If no default and not in YAML, skip — unresolvable at static analysis time
 
         return fields
+
+    # Regex to identify Java constant names (ALL_CAPS_WITH_UNDERSCORES)
+    # These are unresolved constant refs that should NOT be emitted as topic names.
+    _JAVA_CONSTANT_NAME_RE = re.compile(r'^[A-Z][A-Z0-9_]*$')
+
+    def _is_java_constant_name(self, value: str) -> bool:
+        """Return True if value looks like an unresolved Java constant (e.g. TOPIC_NAME)."""
+        return bool(self._JAVA_CONSTANT_NAME_RE.match(value)) and len(value) > 2
 
     def _parse_kafka_producers(self, root: Path) -> list[str]:
         """Scan Java source and application.yml for Kafka producer patterns.
@@ -1207,6 +1225,12 @@ class BackendJavaExtractor(Extractor):
         3. kafkaTemplate.send(topicField, ...) — @Value-injected String field
         4. new ProducerRecord<>(topicField, ...) where topicField is @Value-injected
         5. @SendTo("topic") — reply topics on @KafkaListener methods
+
+        Fallback: When kafkaTemplate.send() uses a method parameter that cannot be
+        resolved at the call site (common in publisher service classes), collect all
+        @Value-injected kafka/topic fields from the entire codebase and emit them.
+        This handles the pattern where a use-case/aspect injects the topic via @Value
+        and passes it as a String argument to a shared publisher method.
 
         Skips kafkaTemplate.send(producerRecord, ...) where the first arg is a
         ProducerRecord variable (detected by camelCase without dots/quotes and the
@@ -1240,6 +1264,16 @@ class BackendJavaExtractor(Extractor):
         sendto_pattern = re.compile(
             r"""@SendTo\(\s*(?:\{)?["']([^"']+)["']""",
         )
+        # @Value pattern to detect kafka/topic-related injected fields
+        # e.g.: @Value("${spring.kafka.topic.my-topic}") private String myTopicField;
+        kafka_value_field_pattern = re.compile(
+            r'@Value\s*\(\s*["\'](\$\{[^}]*(?:kafka|topic|TOPIC)[^}]*\})["\']',
+            re.IGNORECASE,
+        )
+
+        # Track files that contain kafkaTemplate.send() but have unresolvable topic args
+        # (method parameters that aren't fields/constants in the same file)
+        files_with_unresolved_sends: list[Path] = []
 
         for java_file in root.rglob("*.java"):
             parts = java_file.parts
@@ -1263,10 +1297,11 @@ class BackendJavaExtractor(Extractor):
             for m in producer_record_ctor_pattern.finditer(content):
                 raw = m.group(1)
                 resolved = self._resolve_kafka_topic_ref(raw, merged, yaml_props)
-                if resolved and resolved not in seen:
+                if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
                     seen.add(resolved)
                     produces.append(resolved)
 
+            had_unresolved = False
             for m in send_pattern.finditer(content):
                 raw = m.group(1)
                 # Skip ProducerRecord variables — topic already extracted from ctor above
@@ -1274,16 +1309,46 @@ class BackendJavaExtractor(Extractor):
                 if raw_stripped in producer_record_vars:
                     continue
                 resolved = self._resolve_kafka_topic_ref(raw, merged, yaml_props)
-                if resolved and resolved not in seen:
+                if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
                     seen.add(resolved)
                     produces.append(resolved)
+                elif resolved is None:
+                    # Topic arg is unresolvable at call site (likely a method parameter)
+                    had_unresolved = True
+
+            if had_unresolved:
+                files_with_unresolved_sends.append(java_file)
 
             for m in sendto_pattern.finditer(content):
                 topic = m.group(1).strip()
                 resolved = self._resolve_kafka_topic_ref(topic, merged, yaml_props)
-                if resolved and resolved not in seen:
+                if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
                     seen.add(resolved)
                     produces.append(resolved)
+
+        # Fallback: if any files had unresolvable kafkaTemplate.send() topic args,
+        # collect all @Value-injected kafka/topic fields from the ENTIRE codebase.
+        # This handles the common pattern where a publisher service receives the topic
+        # as a method parameter that was @Value-injected in a use-case/aspect class.
+        if files_with_unresolved_sends:
+            for java_file in root.rglob("*.java"):
+                parts = java_file.parts
+                if any(part in _EXCLUDED_DIRS for part in parts):
+                    continue
+                if any(part in _TEST_DIR_SEGMENTS for part in parts):
+                    continue
+                try:
+                    content = java_file.read_text(errors="replace")
+                except OSError:
+                    continue
+                if "@Value" not in content:
+                    continue
+                for m in kafka_value_field_pattern.finditer(content):
+                    el_expr = m.group(1)  # e.g. "${spring.kafka.topic.locations-config-changed}"
+                    resolved = self._resolve_kafka_topic_ref(el_expr, merged, yaml_props)
+                    if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
+                        seen.add(resolved)
+                        produces.append(resolved)
 
         return produces
 
@@ -1432,30 +1497,38 @@ class BackendJavaExtractor(Extractor):
         for key, value in flat_props.items():
             if not url_key_pattern.search(key):
                 continue
-            if not value.startswith(("http://", "https://", "${", "http")):
-                # Also allow Spring EL like ${SOME_URL:https://...}
-                resolved = self._resolve_spring_el_topic(value)
-                if not resolved.startswith(("http://", "https://")):
-                    continue
-                value = resolved
 
-            if _is_excluded_url(value) or _is_excluded_url(key):
+            # Resolve Spring EL expressions like ${ENV_VAR:https://default-url}
+            resolved_value = value
+            if value.startswith("${"):
+                resolved_value = self._resolve_spring_el_topic(value)
+
+            if not resolved_value.startswith(("http://", "https://")):
+                continue
+
+            if _is_excluded_url(resolved_value) or _is_excluded_url(key):
                 continue
 
             if key not in seen_keys:
                 seen_keys.add(key)
                 calls.append(
                     OutboundCall(
-                        target_url=value if value.startswith("http") else None,
+                        target_url=resolved_value,
                         config_key=key,
                         protocol="http",
                     )
                 )
 
-        # Phase B: scan Java source for WebClient.builder().baseUrl() patterns
-        # to find additional URL references not in YAML
+        # Phase B: scan Java source for WebClient.builder().baseUrl() and
+        # HttpServiceProxyFactory + @HttpExchange declarative client patterns.
         webclient_pattern = re.compile(
             r"""WebClient\.builder\(\)\s*\.baseUrl\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*\)""",
+        )
+        # Detect Spring 6 declarative HTTP client base URL injection.
+        # Pattern: WebClient.builder().baseUrl(someVar) where someVar comes from @Value.
+        # Also detect env-var or @Value references passed directly to baseUrl().
+        http_exchange_baseurl_pattern = re.compile(
+            r"""\.baseUrl\s*\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*\)""",
         )
 
         for java_file in root.rglob("*.java"):
@@ -1469,23 +1542,27 @@ class BackendJavaExtractor(Extractor):
             except OSError:
                 continue
 
-            if "WebClient" not in content:
+            if "WebClient" not in content and "HttpServiceProxyFactory" not in content:
                 continue
 
-            for m in webclient_pattern.finditer(content):
+            for m in http_exchange_baseurl_pattern.finditer(content):
                 raw = m.group(1).strip().strip('"').strip("'")
                 if raw.startswith("${"):
-                    # Resolve from flat props
+                    # Inline Spring EL: .baseUrl("${device-twins.base-url}")
                     inner = re.fullmatch(r"\$\{([^}]+)\}", raw)
                     if inner:
                         prop_key = inner.group(1).split(":")[0]
-                        if prop_key in flat_props:
-                            url_value = flat_props[prop_key]
-                            if prop_key not in seen_keys and not _is_excluded_url(url_value):
+                        default_url = inner.group(1).split(":", 1)[1] if ":" in inner.group(1) else None
+                        url_value = flat_props.get(prop_key) or default_url
+                        if url_value and not self._resolve_spring_el_topic(url_value).startswith("http"):
+                            url_value = self._resolve_spring_el_topic(raw)
+                        if url_value and prop_key not in seen_keys and not _is_excluded_url(prop_key):
+                            resolved_url = self._resolve_spring_el_topic(url_value) if url_value.startswith("${") else url_value
+                            if resolved_url.startswith("http"):
                                 seen_keys.add(prop_key)
                                 calls.append(
                                     OutboundCall(
-                                        target_url=url_value if url_value.startswith("http") else None,
+                                        target_url=resolved_url,
                                         config_key=prop_key,
                                         protocol="http",
                                     )
@@ -1500,6 +1577,28 @@ class BackendJavaExtractor(Extractor):
                                 protocol="http",
                             )
                         )
+                else:
+                    # Variable name — try to resolve from @Value fields in the same file
+                    # Look for: @Value("${some.key}") ... String rawVar; / String raw = env...
+                    value_ref_pattern = re.compile(
+                        rf'@Value\s*\(\s*["\'](\$\{{[^}}]+\}})["\'].*?(?:String\s+{re.escape(raw)}\b)',
+                        re.DOTALL,
+                    )
+                    for vm in value_ref_pattern.finditer(content):
+                        el_expr = vm.group(1)
+                        resolved_url = self._resolve_spring_el_topic(el_expr)
+                        if resolved_url.startswith("http"):
+                            inner_key = re.fullmatch(r"\$\{([^}]+)\}", el_expr)
+                            prop_key = inner_key.group(1).split(":")[0] if inner_key else el_expr
+                            if prop_key not in seen_keys and not _is_excluded_url(prop_key):
+                                seen_keys.add(prop_key)
+                                calls.append(
+                                    OutboundCall(
+                                        target_url=resolved_url,
+                                        config_key=prop_key,
+                                        protocol="http",
+                                    )
+                                )
 
         return calls
 

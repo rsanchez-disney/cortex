@@ -1764,3 +1764,384 @@ class TestActuatorEndpointFiltering:
         contracts = extractor.find_api_contracts(tmp_path)
         all_paths = [ep.path for c in contracts for ep in c.endpoints]
         assert any(p and p.startswith("/actualization") for p in all_paths)
+
+
+# ---------------------------------------------------------------------------
+# TestKafkaProducerFallback — cross-class @Value topic field resolution
+# ---------------------------------------------------------------------------
+
+
+class TestKafkaProducerFallback:
+    """Tests for the fallback mechanism that collects @Value-injected kafka topics
+    when kafkaTemplate.send() uses an unresolvable method parameter.
+
+    This covers the common Spring Boot pattern:
+      - A publisher class receives the topic as a method parameter
+      - The use-case/aspect that calls it injects the topic via @Value
+    """
+
+    def test_value_injected_topic_resolved_via_fallback(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """When kafkaTemplate.send(topic, ...) uses a method param, fall back to
+        scanning @Value-injected kafka/topic fields across the codebase."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        # Publisher class: topic is a method parameter (not resolvable at call site)
+        (src / "EventPublisher.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.kafka.core.KafkaTemplate;\n'
+            'public class EventPublisher {\n'
+            '    private KafkaTemplate<String, Object> kafkaTemplate;\n'
+            '    public void publish(Object event, String topic) {\n'
+            '        kafkaTemplate.send(topic, event);\n'
+            '    }\n'
+            '}\n'
+        )
+
+        # Use-case class: injects topic via @Value and calls publisher
+        (src / "LocationUseCase.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'public class LocationUseCase {\n'
+            '    @Value("${spring.kafka.topic.locations-config-changed}")\n'
+            '    private String locationConfigTopic;\n'
+            '    public void update() {\n'
+            '        eventPublisher.publish(data, locationConfigTopic);\n'
+            '    }\n'
+            '}\n'
+        )
+
+        # YAML: defines the topic default
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            'spring:\n'
+            '  kafka:\n'
+            '    topic:\n'
+            '      locations-config-changed: locations-config-changed\n'
+        )
+
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "locations-config-changed" in produces
+
+    def test_multiple_value_topics_resolved_via_fallback(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """When multiple @Value kafka topics exist, all should be collected via fallback."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        # Publisher: receives topic as parameter
+        (src / "KafkaPublisher.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.kafka.core.KafkaTemplate;\n'
+            'public class KafkaPublisher {\n'
+            '    private KafkaTemplate<String, Object> kafkaTemplate;\n'
+            '    public void send(String topic, Object payload) {\n'
+            '        kafkaTemplate.send(topic, payload);\n'
+            '    }\n'
+            '}\n'
+        )
+
+        # Aspect 1: injects one topic
+        (src / "OrderAspect.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'public class OrderAspect {\n'
+            '    @Value("${spring.kafka.topic.order-created:order-created}")\n'
+            '    private String orderTopic;\n'
+            '}\n'
+        )
+
+        # Aspect 2: injects another topic
+        (src / "PaymentAspect.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'public class PaymentAspect {\n'
+            '    @Value("${spring.kafka.topic.payment-processed:payment-processed}")\n'
+            '    private String paymentTopic;\n'
+            '}\n'
+        )
+
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "order-created" in produces
+        assert "payment-processed" in produces
+
+    def test_unresolved_java_constant_names_not_emitted(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Unresolved constant identifiers like TOPIC_NAME should not appear in produces."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        # kafkaTemplate.send() where topic arg resolves to TOPIC_NAME (unresolvable constant)
+        (src / "BadPublisher.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.kafka.core.KafkaTemplate;\n'
+            'public class BadPublisher {\n'
+            '    private KafkaTemplate<String, Object> kafkaTemplate;\n'
+            '    public void send(String TOPIC_NAME) {\n'
+            '        kafkaTemplate.send(TOPIC_NAME, "data");\n'
+            '    }\n'
+            '}\n'
+        )
+
+        produces = extractor._parse_kafka_producers(tmp_path)
+        assert "TOPIC_NAME" not in produces
+
+    def test_is_java_constant_name_detection(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """_is_java_constant_name correctly identifies Java constant-style identifiers."""
+        # Should be identified as constants
+        assert extractor._is_java_constant_name("TOPIC_NAME") is True
+        assert extractor._is_java_constant_name("MY_KAFKA_TOPIC") is True
+        assert extractor._is_java_constant_name("ORDER_CREATED") is True
+
+        # Should NOT be identified as constants
+        assert extractor._is_java_constant_name("order-created") is False
+        assert extractor._is_java_constant_name("locations-config-changed") is False
+        assert extractor._is_java_constant_name("myTopic") is False
+        assert extractor._is_java_constant_name("my.topic.key") is False
+
+
+# ---------------------------------------------------------------------------
+# TestOutboundCallUrlResolution — Spring EL default URL extraction
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundCallUrlResolution:
+    """Tests that outbound calls have target_url populated from Spring EL defaults."""
+
+    def test_spring_el_default_url_resolved_in_outbound_calls(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """When application.yml has ${ENV_VAR:https://default-url}, target_url is set."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            'frictionless-commerce:\n'
+            '  base-url: ${FRICTIONLESS_COMMERCE_BASE_URI:https://example.com/frictionless/v1/}\n'
+            'device-twins:\n'
+            '  base-url: ${DEVICE_TWINS_BASE_URL:https://device-twins.example.com}\n'
+        )
+
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+
+        assert "frictionless-commerce.base-url" in call_map
+        fc_call = call_map["frictionless-commerce.base-url"]
+        assert fc_call.target_url == "https://example.com/frictionless/v1/"
+
+        assert "device-twins.base-url" in call_map
+        dt_call = call_map["device-twins.base-url"]
+        assert dt_call.target_url == "https://device-twins.example.com"
+
+    def test_plain_https_url_in_yaml_still_works(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Plain https:// URLs in YAML (no Spring EL) still populate target_url."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            'my-service:\n'
+            '  base-url: https://api.my-service.example.com/v2\n'
+        )
+
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+
+        assert "my-service.base-url" in call_map
+        assert call_map["my-service.base-url"].target_url == "https://api.my-service.example.com/v2"
+
+    def test_spring_el_without_default_url_not_included(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """${ENV_VAR} with no default and not resolvable should not create an outbound call."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            'internal:\n'
+            '  base-url: ${INTERNAL_SERVICE_URL}\n'
+        )
+
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        # Should not appear because the value resolves to env var name, not http://
+        call_map = {c.config_key: c for c in calls}
+        assert "internal.base-url" not in call_map
+
+
+# ---------------------------------------------------------------------------
+# TestHttpExchangeClientDetection — @HttpExchange declarative client detection
+# ---------------------------------------------------------------------------
+
+
+class TestHttpExchangeClientDetection:
+    """Tests for detecting Spring 6 @HttpExchange declarative HTTP clients."""
+
+    def test_http_exchange_base_url_from_value_annotation(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Value-injected baseUrl in WebConfig is detected as outbound call."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example" / "config"
+        src.mkdir(parents=True)
+
+        # WebConfig-style bean factory using HttpServiceProxyFactory
+        (src / "WebConfig.java").write_text(
+            'package com.example.config;\n'
+            'import org.springframework.beans.factory.annotation.Value;\n'
+            'import org.springframework.web.reactive.function.client.WebClient;\n'
+            'import org.springframework.web.service.invoker.HttpServiceProxyFactory;\n'
+            'public class WebConfig {\n'
+            '    @Value("${device-twins.base-url}")\n'
+            '    private String deviceTwinsBaseUrl;\n'
+            '    public WebClient webClient() {\n'
+            '        return WebClient.builder()\n'
+            '                .baseUrl(deviceTwinsBaseUrl)\n'
+            '                .build();\n'
+            '    }\n'
+            '}\n'
+        )
+
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            'device-twins:\n'
+            '  base-url: ${DEVICE_TWINS_BASE_URL:https://device-twins.example.com}\n'
+        )
+
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+
+        # Should be found from YAML Phase A since the YAML resolves correctly
+        assert "device-twins.base-url" in call_map
+        assert call_map["device-twins.base-url"].target_url == "https://device-twins.example.com"
+
+    def test_inline_spring_el_in_base_url_call(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """WebClient.builder().baseUrl('${svc.base-url:https://default}') is detected."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        (src / "ClientConfig.java").write_text(
+            'package com.example;\n'
+            'import org.springframework.web.reactive.function.client.WebClient;\n'
+            'public class ClientConfig {\n'
+            '    public WebClient client() {\n'
+            '        return WebClient.builder()\n'
+            '                .baseUrl("${partner-api.base-url:https://api.partner.example.com}")\n'
+            '                .build();\n'
+            '    }\n'
+            '}\n'
+        )
+
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+        assert "partner-api.base-url" in call_map
+        assert call_map["partner-api.base-url"].target_url == "https://api.partner.example.com"
+
+
+class TestYamlValueIsSpringElResolution:
+    """Tests for the case where a YAML value is itself a Spring EL expression.
+
+    Pattern (locations-microservice):
+        application.yml:
+            locations-config-changed: ${LOCATIONS_CONFIG_CHANGED_TOPIC:locations-config-changed}
+        Java:
+            @Value("${spring.kafka.topic.locations-config-changed}")
+            private String locationConfigTopic;
+
+    The @Value key resolves to the YAML value, which is itself ${ENV:default}.
+    A second resolution pass must extract the concrete topic name.
+    """
+
+    def test_kafka_produces_resolved_when_yaml_value_is_spring_el(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Kafka topic is correctly resolved through two layers of Spring EL."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        res = tmp_path / "src" / "main" / "resources"
+        res.mkdir(parents=True)
+
+        # YAML: topic value is itself ${ENV:default}
+        (res / "application.yml").write_text(
+            "spring:\n"
+            "  kafka:\n"
+            "    topic:\n"
+            "      locations-config-changed: ${LOCATIONS_CONFIG_CHANGED_TOPIC:locations-config-changed}\n"
+        )
+
+        # Publisher receives topic as method parameter (unresolvable at call site)
+        (src / "EventPublisherImpl.java").write_text(
+            "package com.example;\n"
+            "public class EventPublisherImpl {\n"
+            "    private KafkaTemplate<String, Object> kafkaTemplate;\n"
+            "    public void publish(String topic, Object event) {\n"
+            "        kafkaTemplate.send(topic, event);\n"
+            "    }\n"
+            "}\n"
+        )
+
+        # Use-case has @Value annotation referencing the YAML key (no default)
+        (src / "PublishAspect.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "public class PublishAspect {\n"
+            "    @Value(\"${spring.kafka.topic.locations-config-changed}\")\n"
+            "    private String locationConfigTopic;\n"
+            "}\n"
+        )
+
+        produces = extractor._parse_kafka_producers(tmp_path)
+        # Must resolve to the concrete default, not the raw ${...} expression
+        assert "locations-config-changed" in produces
+        assert not any(p.startswith("${") for p in produces), (
+            f"Raw Spring EL expression found in produces: {produces}"
+        )
+
+    def test_resolve_kafka_topic_ref_double_el(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """_resolve_kafka_topic_ref resolves ${KEY} when YAML[KEY] = ${ENV:default}."""
+        yaml_props = {
+            "spring.kafka.topic.my-topic": "${MY_TOPIC_ENV:my-concrete-topic}",
+        }
+        result = extractor._resolve_kafka_topic_ref(
+            "${spring.kafka.topic.my-topic}", {}, yaml_props
+        )
+        assert result == "my-concrete-topic"
+
+    def test_scan_value_injected_fields_double_el(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """_scan_value_injected_fields resolves field when YAML value is Spring EL."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        res = tmp_path / "src" / "main" / "resources"
+        res.mkdir(parents=True)
+
+        (res / "application.yml").write_text(
+            "spring:\n"
+            "  kafka:\n"
+            "    topic:\n"
+            "      orders: ${ORDERS_TOPIC:orders-created}\n"
+        )
+
+        (src / "OrderService.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "public class OrderService {\n"
+            "    @Value(\"${spring.kafka.topic.orders}\")\n"
+            "    private String ordersTopic;\n"
+            "}\n"
+        )
+
+        fields = extractor._scan_value_injected_fields(tmp_path)
+        # Should resolve to concrete default, not raw ${ORDERS_TOPIC:orders-created}
+        assert "ordersTopic" in fields
+        assert fields["ordersTopic"] == "orders-created"
+        assert not fields["ordersTopic"].startswith("${")
