@@ -21,6 +21,7 @@ import yaml
 
 from atlas import __version__
 from atlas.extractors import ExtractorError, get_extractor
+from atlas.repo_cloner import inject_pat
 from atlas.schema import ExtractionError, ServiceManifest
 from atlas.storage import StorageBackend, StorageError
 from atlas.validation import ValidationError, validate_service_yaml
@@ -386,17 +387,7 @@ def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, s
     clone_dir = tempfile.mkdtemp(prefix=f"atlas-clone-{name}-")
     clone_path = Path(clone_dir) / name
 
-    # Inject PAT into URL for Azure DevOps.
-    # Strip any existing "user@" from the URL before injecting the PAT, so that
-    # URLs like https://IntuitDome@dev.azure.com/... don't produce a double-@ URL.
-    # Result: https://{pat}@dev.azure.com/org/project/_git/repo
-    if "dev.azure.com" in url:
-        import re
-        clean_url = re.sub(r"https://[^@]+@", "https://", url)
-        auth_url = clean_url.replace("https://", f"https://{azure_pat}@")
-    else:
-        # Generic git URL — use PAT as password
-        auth_url = url.replace("https://", f"https://pat:{azure_pat}@")
+    auth_url = inject_pat(url, azure_pat)
 
     clone_cmd = ["git", "clone", "--depth", "1"]
     if branch:
@@ -417,6 +408,70 @@ def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, s
         raise RuntimeError(f"git clone timed out for '{name}'")
 
     return clone_path, clone_dir
+
+
+@app.command(name="clone-repos")
+def clone_repos_cmd(
+    config: Path = typer.Option(
+        "config/repos-real.yaml", help="Path to source repos config YAML"
+    ),
+    clone_dir: Path = typer.Option(
+        ".repos", help="Directory to clone repos into"
+    ),
+    output_config: Path = typer.Option(
+        "config/repos-local.yaml", help="Path to write generated local config"
+    ),
+) -> None:
+    """Clone all remote repos locally and generate repos-local.yaml.
+
+    Reads repo entries from the source config (default: repos-real.yaml),
+    shallow-clones each unique URL into the clone directory, and writes a
+    repos-local.yaml that points at the local clones.
+
+    Requires the AZURE_PAT environment variable for Azure DevOps URLs.
+    """
+    from atlas.repo_cloner import clone_repos, generate_local_config
+
+    # Load config
+    repos = _load_repos_config(config)
+
+    # Require AZURE_PAT
+    azure_pat = os.environ.get("AZURE_PAT")
+    if not azure_pat:
+        typer.echo(
+            "Error: AZURE_PAT environment variable is required for cloning remote repos.\n"
+            "Set it with: export AZURE_PAT=your-pat-here",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    # Clone
+    typer.echo(f"Cloning {len(repos)} repos into {clone_dir}/ ...")
+    result = clone_repos(repos, clone_dir, azure_pat)
+
+    # Print per-repo status
+    for status in result.statuses:
+        if status.status == "cloned":
+            typer.echo(f"  CLONED:  {status.name} -> {status.path}")
+        elif status.status == "skipped-duplicate":
+            typer.echo(f"  DEDUP:   {status.name} -> {status.path}")
+        elif status.status == "failed":
+            typer.echo(f"  FAILED:  {status.name} — {status.error}", err=True)
+
+    # Generate local config
+    local_yaml = generate_local_config(repos, clone_dir, result.url_to_clone_name)
+    output_config.parent.mkdir(parents=True, exist_ok=True)
+    output_config.write_text(local_yaml)
+    typer.echo(f"\nWrote {output_config}")
+
+    # Summary
+    typer.echo(
+        f"\nDone: {result.cloned} cloned, {result.skipped} deduped, "
+        f"{result.failed} failed out of {len(repos)} repos"
+    )
+
+    if result.failed > 0:
+        raise typer.Exit(code=1)
 
 
 @app.command(name="mcp-server")

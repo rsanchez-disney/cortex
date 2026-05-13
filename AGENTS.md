@@ -214,3 +214,6 @@ atlas-output/
     └── mcp/
         └── {date}.jsonl         # MCP query logs
 ```
+
+# Notes
+- Always use Clean Architecture Patterns

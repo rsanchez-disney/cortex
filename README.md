@@ -42,9 +42,44 @@ The primary development workflow uses `atlas run-local` to run the full extract 
 uv run atlas run-local --config config/repos-fixtures.yaml --output-dir ./atlas-output
 ```
 
-#### 2. Run against real local repos
+#### 2. Clone real repos and run locally (recommended)
 
-Edit `config/repos-local.yaml` to point at your local repo clones:
+Use `atlas clone-repos` to shallow-clone all repos from `config/repos-real.yaml` into a local `.repos/` directory and auto-generate `config/repos-local.yaml` pointing at those clones:
+
+```bash
+# Set your Azure DevOps PAT
+export AZURE_PAT=your-pat-here
+
+# Clone all repos and generate repos-local.yaml
+uv run atlas clone-repos
+```
+
+This will:
+- Shallow-clone each unique URL from `config/repos-real.yaml` into `.repos/<repo-name>/`
+- Deduplicate shared URLs (e.g. two services sharing one iOS repo clone once)
+- Overwrite `config/repos-local.yaml` with `path` entries pointing at the clones
+- Preserve all service metadata (owner, domain, keywords, extractor_hints, etc.)
+
+Then run the pipeline against the local clones:
+
+```bash
+uv run atlas run-local --config config/repos-local.yaml --output-dir ./atlas-output
+```
+
+To refresh clones (e.g. after upstream changes), re-run `atlas clone-repos` — existing clones are replaced with fresh shallow clones.
+
+**Custom options:**
+
+```bash
+uv run atlas clone-repos \
+  --config config/repos-real.yaml \
+  --clone-dir .repos \
+  --output-config config/repos-local.yaml
+```
+
+#### 3. Manual repos-local.yaml (alternative)
+
+Instead of using `clone-repos`, you can manually edit `config/repos-local.yaml` to point at your own local repo clones:
 
 ```yaml
 repos:
@@ -68,9 +103,9 @@ repos:
 uv run atlas run-local --config config/repos-local.yaml --output-dir ./atlas-output
 ```
 
-#### 3. Clone from Azure DevOps URLs
+#### 4. Clone from Azure DevOps URLs (inline)
 
-For repos not cloned locally, use URL entries with `AZURE_PAT`:
+For one-off runs without persistent clones, use URL entries directly with `AZURE_PAT` (repos are cloned to a temp dir and cleaned up after):
 
 ```yaml
 repos:
@@ -87,7 +122,7 @@ repos:
 AZURE_PAT=your-pat-here uv run atlas run-local --config config/repos-local.yaml --output-dir ./atlas-output
 ```
 
-#### 4. Start MCP server locally
+#### 5. Start MCP server locally
 
 ```bash
 # Point at the local pipeline output
@@ -270,6 +305,7 @@ memory-hub/
 │   ├── validation.py        # Service metadata validation
 │   ├── storage.py           # Storage backend (local + GCS)
 │   ├── aggregator.py        # Graph aggregation
+│   ├── repo_cloner.py       # Repo cloning & local config generation
 │   └── extractors/
 │       ├── base.py          # Abstract extractor
 │       ├── android.py       # Android extractor
