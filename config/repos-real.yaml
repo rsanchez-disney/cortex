@@ -1,6 +1,18 @@
 # Real repo config — points to actual project clones for local testing.
 # Replace paths/URLs below with your actual local clones or Azure DevOps URLs.
 # For URL entries, set the AZURE_PAT environment variable.
+#
+# Swagger URL formula (backend-java services, Dev environment):
+#   https://asv{region}{env}{webapp_name}.azurewebsites.net/{webapp_name}/v3/api-docs
+#
+# Region acronym is determined by the Azure App Service Plan assigned to the service:
+#   aw3  → West US 3 (westus3) — used by most services
+#   awu  → West US   (westus)  — used by identity and ambientcontrol (app_service_index=5)
+#
+# To add a new service, look up its app_service_index in the IaC terraform.tfvars
+# (app_service_<name> variable) to determine the region acronym, then compute:
+#   region = "awu" if index == 5 else "aw3"
+#   swagger_url = f"https://asv{region}dev{webapp_name}.azurewebsites.net/{webapp_name}/v3/api-docs"
 repos:
 
   - name: mobile-apps-android
@@ -51,6 +63,9 @@ repos:
 
   # ---------------------------------------------------------------------------
   # IntuitDome backend microservices — Java 17 / Spring Boot 3.x / Gradle
+  #
+  # Swagger URL formula (dev environment):
+  #   https://asv{region}dev{webapp_name}.azurewebsites.net/{webapp_name}/v3/api-docs
   # ---------------------------------------------------------------------------
 
   - name: identity-microservice
@@ -60,6 +75,7 @@ repos:
     domain: identity
     tier: critical
     purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
+    swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
 
   - name: accesscontrol-microservice
     url: https://dev.azure.com/IntuitDome/accesscontrol-microservice/_git/accesscontrol-microservice
@@ -68,6 +84,7 @@ repos:
     domain: access-control
     tier: critical
     purpose: Access validation, parking events, AiFi zone detection
+    swagger_url: https://asvaw3devaccesscontrol.azurewebsites.net/accesscontrol/v3/api-docs
 
   - name: payments-microservice
     url: https://dev.azure.com/IntuitDome/payments-microservice/_git/payments-microservice
@@ -76,6 +93,7 @@ repos:
     domain: payments
     tier: critical
     purpose: Payment methods, transactions, invoices, chargebacks
+    swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
 
   - name: frictionless-commerce-microservice
     url: https://dev.azure.com/IntuitDome/frictionless-commerce-microservice/_git/frictionless-commerce-microservice
@@ -84,6 +102,7 @@ repos:
     domain: commerce
     tier: critical
     purpose: Frictionless checkout sessions, AiFi integration, POS
+    swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
 
   - name: loyalty-microservice
     url: https://dev.azure.com/IntuitDome/loyalty-microservice/_git/loyalty-microservice
@@ -92,6 +111,7 @@ repos:
     domain: loyalty
     tier: standard
     purpose: Loyalty points, rewards, achievements, leaderboards, badges
+    swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
 
   - name: loyalty-sa-microservice
     url: https://dev.azure.com/IntuitDome/loyalty-sa-microservice/_git/loyalty-sa-microservice
@@ -100,6 +120,7 @@ repos:
     domain: loyalty
     tier: standard
     purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
+    swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
 
   - name: entitlements-microservice
     url: https://dev.azure.com/IntuitDome/entitlements-microservice/_git/entitlements-microservice
@@ -108,6 +129,7 @@ repos:
     domain: entitlements
     tier: critical
     purpose: Entitlement assignment, redemption, transfer, expiration
+    swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
 
   - name: suites-microservice
     url: https://dev.azure.com/IntuitDome/suites-microservice/_git/suites-microservice
@@ -116,6 +138,7 @@ repos:
     domain: suites
     tier: critical
     purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
+    swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
 
   - name: ticketing-microservice
     url: https://dev.azure.com/IntuitDome/_git/ticketing-microservice
@@ -124,6 +147,7 @@ repos:
     domain: ticketing
     tier: critical
     purpose: Ticketing management, seat inventory, reservations, event access
+    swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
 
   - name: locations-microservice
     url: https://dev.azure.com/IntuitDome/locations-microservice/_git/locations-microservice
@@ -132,3 +156,157 @@ repos:
     domain: locations
     tier: critical
     purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP device management, IoT device twins sync
+    swagger_url: https://asvaw3devlocationsmicroservice.azurewebsites.net/locationsmicroservice/v3/api-docs
+
+  - name: ambientcontrol-microservice
+    url: https://dev.azure.com/IntuitDome/ambient-control-microservice/_git/ambient-control-microservice
+    type: backend-java
+    owner: team-backend
+    domain: arena-experience
+    tier: standard
+    purpose: Ambient arena controls — lighting, sound, scoreboard, and environmental automation
+    swagger_url: https://asvawudevambientcontrol.azurewebsites.net/ambientcontrol/v3/api-docs
+
+  - name: backofhouse-microservice
+    url: https://dev.azure.com/IntuitDome/backofhouse-microservice/_git/backofhouse-microservice
+    type: backend-java
+    owner: team-backend
+    domain: operations
+    tier: standard
+    purpose: Back-of-house operations management, staff workflows, and internal tooling
+    swagger_url: https://asvaw3devbackofhouse.azurewebsites.net/backofhouse/v3/api-docs
+
+  - name: commerce-microservice
+    url: https://dev.azure.com/IntuitDome/commerce-microservice/_git/commerce-microservice
+    type: backend-java
+    owner: team-backend
+    domain: commerce
+    tier: critical
+    purpose: Commerce catalog, ordering, and retail transaction management
+    swagger_url: https://asvaw3devcommerce.azurewebsites.net/commerce/v3/api-docs
+
+  - name: configuration-microservice
+    url: https://dev.azure.com/IntuitDome/configuration-microservice/_git/configuration-microservice
+    type: backend-java
+    owner: team-backend
+    domain: platform
+    tier: standard
+    purpose: Centralized runtime configuration management for all platform services
+    swagger_url: https://asvaw3devconfiguration.azurewebsites.net/configuration/v3/api-docs
+
+  - name: credentialid-microservice
+    url: https://dev.azure.com/IntuitDome/credentialid-integration-microservice/_git/credentialid-integration-microservice
+    type: backend-java
+    owner: team-backend
+    domain: identity
+    tier: critical
+    purpose: Credential issuance and validation for physical and digital access (NFC, QR, biometric)
+    swagger_url: https://asvaw3devcredentialid.azurewebsites.net/credentialid/v3/api-docs
+
+  - name: datams-microservice
+    url: https://dev.azure.com/IntuitDome/data-microservice/_git/data-microservice
+    type: backend-java
+    owner: team-backend
+    domain: data
+    tier: standard
+    purpose: Data management service — aggregation, transformation, and reporting pipelines
+    swagger_url: https://asvaw3devdatams.azurewebsites.net/datams/v3/api-docs
+
+  - name: evcharge-microservice
+    url: https://dev.azure.com/IntuitDome/ev-charge-microservice/_git/ev-charge-microservice
+    type: backend-java
+    owner: team-backend
+    domain: parking
+    tier: standard
+    purpose: EV charging station management, session tracking, and billing integration
+    swagger_url: https://asvaw3devevcharge.azurewebsites.net/evcharge/v3/api-docs
+
+  - name: incident-microservice
+    url: https://dev.azure.com/IntuitDome/incidents-microservice/_git/incidents-microservice
+    type: backend-java
+    owner: team-backend
+    domain: operations
+    tier: standard
+    purpose: Incident reporting, tracking, and escalation for arena operations
+    swagger_url: https://asvaw3devincident.azurewebsites.net/incident/v3/api-docs
+
+  - name: nba-microservice
+    url: https://dev.azure.com/IntuitDome/nba-microservice/_git/nba-microservice
+    type: backend-java
+    owner: team-backend
+    domain: entertainment
+    tier: standard
+    purpose: NBA data integration — live game feeds, scores, player stats, and schedule sync
+    swagger_url: https://asvaw3devnba.azurewebsites.net/nba/v3/api-docs
+
+  - name: notifications-microservice
+    url: https://dev.azure.com/IntuitDome/notifications-microservice/_git/notifications-microservice
+    type: backend-java
+    owner: team-backend
+    domain: notifications
+    tier: standard
+    purpose: Push notifications, in-app alerts, and SMS/email delivery for fan and staff communications
+    swagger_url: https://asvaw3devnotifications.azurewebsites.net/notifications/v3/api-docs
+
+  - name: offlinecache-microservice
+    url: https://dev.azure.com/IntuitDome/offlinecache-microservice/_git/offlinecache-microservice
+    type: backend-java
+    owner: team-backend
+    domain: platform
+    tier: standard
+    purpose: Offline cache management — pre-computation and serving of data for low-latency mobile access
+    swagger_url: https://asvaw3devofflinecache.azurewebsites.net/offlinecache/v3/api-docs
+
+  - name: preferences-microservice
+    url: https://dev.azure.com/IntuitDome/preferences-microservice/_git/preferences-microservice
+    type: backend-java
+    owner: team-backend
+    domain: identity
+    tier: standard
+    purpose: User preferences and personalization settings (notifications, accessibility, favorites)
+    swagger_url: https://asvaw3devpreferences.azurewebsites.net/preferences/v3/api-docs
+
+  - name: purchasenotifications-microservice
+    url: https://dev.azure.com/IntuitDome/purchase-notifications-microservice/_git/purchase-notifications-microservice
+    type: backend-java
+    owner: team-backend
+    domain: commerce
+    tier: standard
+    purpose: Purchase confirmation and transactional notification delivery for commerce events
+    swagger_url: https://asvaw3devpurchasenotifications.azurewebsites.net/purchasenotifications/v3/api-docs
+
+  - name: queuemanagement-microservice
+    url: https://dev.azure.com/IntuitDome/queue-management-microservice/_git/queue-management-microservice
+    type: backend-java
+    owner: team-backend
+    domain: operations
+    tier: standard
+    purpose: Virtual queue management for concessions, merchandise, and high-demand entry points
+    swagger_url: https://asvaw3devqueuemanagement.azurewebsites.net/queuemanagement/v3/api-docs
+
+  - name: replayengine-microservice
+    url: https://dev.azure.com/IntuitDome/replay-engine-microservice/_git/replay-engine-microservice
+    type: backend-java
+    owner: team-backend
+    domain: entertainment
+    tier: standard
+    purpose: In-arena instant replay engine — clip capture, processing, and fan display distribution
+    swagger_url: https://asvaw3devreplayengine.azurewebsites.net/replayengine/v3/api-docs
+
+  - name: seatpresence-microservice
+    url: https://dev.azure.com/IntuitDome/seat-presence-microservice/_git/seat-presence-microservice
+    type: backend-java
+    owner: team-backend
+    domain: access-control
+    tier: standard
+    purpose: Real-time seat occupancy detection and presence tracking for dynamic fan experiences
+    swagger_url: https://asvaw3devseatpresence.azurewebsites.net/seatpresence/v3/api-docs
+
+  - name: staff-microservice
+    url: https://dev.azure.com/IntuitDome/staff-microservice/_git/staff-microservice
+    type: backend-java
+    owner: team-backend
+    domain: operations
+    tier: standard
+    purpose: Staff profile management, shift scheduling, role assignment, and internal communications
+    swagger_url: https://asvaw3devstaff.azurewebsites.net/staff/v3/api-docs

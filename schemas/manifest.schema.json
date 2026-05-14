@@ -283,6 +283,11 @@
     "cache_type": {
       "type": "string",
       "description": "Cache technology detected (redis, memcached, caffeine, etc.)"
+    },
+    "swagger_url": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "Swagger/OpenAPI documentation URL (Dev environment default). Format: https://asv{region}{env}{webapp_name}.azurewebsites.net/{webapp_name}/v3/api-docs"
     }
   },
   "additionalProperties": false

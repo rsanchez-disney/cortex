@@ -469,10 +469,12 @@ class AtlasMCPServer:
                     "spec_available": True,
                 }
             except StorageError:
-                # Get integration notes for this endpoint
+                # Get integration notes and swagger_url for this endpoint
                 manifest = await self._get_manifest(service)
                 notes = []
+                swagger_url = None
                 if manifest:
+                    swagger_url = manifest.get("swagger_url")
                     for n in manifest.get("integration_notes", []):
                         scope = n.get("scope", "")
                         if scope == f"{method} {path}" or scope == "global":
@@ -482,9 +484,15 @@ class AtlasMCPServer:
                     "service": service,
                     "method": method,
                     "path": path,
-                    "message": "No API spec file found for this service.",
+                    "message": (
+                        f"Live Swagger/OpenAPI docs available at: {swagger_url}"
+                        if swagger_url
+                        else "No API spec file found for this service."
+                    ),
                     "integration_notes": notes,
                 }
+                if swagger_url:
+                    result["swagger_url"] = swagger_url
 
             await self._log_query(
                 "get_endpoint_contract",

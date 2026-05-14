@@ -66,6 +66,7 @@ class ServiceYaml(BaseModel):
     keywords: list[str] = Field(default_factory=list, max_length=10)
     integration_notes: list[IntegrationNote] = Field(default_factory=list, max_length=20)
     extractor_hints: ExtractorHints | None = None
+    swagger_url: str | None = None
 
     @field_validator("integration_notes")
     @classmethod
@@ -200,6 +201,8 @@ class ServiceManifest(BaseModel):
     runtime: RuntimeInfo | None = None
     ci: str | None = None
     integration_notes: list[IntegrationNote] = Field(default_factory=list, max_length=20)
+
+    swagger_url: str | None = None
 
     extracted_at: datetime
     extractor_version: str

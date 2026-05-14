@@ -48,6 +48,7 @@ repos:
   domain: identity
   tier: critical
   purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
+  swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
 - name: accesscontrol-microservice
   path: .repos/accesscontrol-microservice
   type: backend-java
@@ -55,6 +56,7 @@ repos:
   domain: access-control
   tier: critical
   purpose: Access validation, parking events, AiFi zone detection
+  swagger_url: https://asvaw3devaccesscontrol.azurewebsites.net/accesscontrol/v3/api-docs
 - name: payments-microservice
   path: .repos/payments-microservice
   type: backend-java
@@ -62,6 +64,7 @@ repos:
   domain: payments
   tier: critical
   purpose: Payment methods, transactions, invoices, chargebacks
+  swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
 - name: frictionless-commerce-microservice
   path: .repos/frictionless-commerce-microservice
   type: backend-java
@@ -69,6 +72,7 @@ repos:
   domain: commerce
   tier: critical
   purpose: Frictionless checkout sessions, AiFi integration, POS
+  swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
 - name: loyalty-microservice
   path: .repos/loyalty-microservice
   type: backend-java
@@ -76,6 +80,7 @@ repos:
   domain: loyalty
   tier: standard
   purpose: Loyalty points, rewards, achievements, leaderboards, badges
+  swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
 - name: loyalty-sa-microservice
   path: .repos/loyalty-sa-microservice
   type: backend-java
@@ -83,6 +88,7 @@ repos:
   domain: loyalty
   tier: standard
   purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
+  swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
 - name: entitlements-microservice
   path: .repos/entitlements-microservice
   type: backend-java
@@ -90,6 +96,7 @@ repos:
   domain: entitlements
   tier: critical
   purpose: Entitlement assignment, redemption, transfer, expiration
+  swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
 - name: suites-microservice
   path: .repos/suites-microservice
   type: backend-java
@@ -97,6 +104,7 @@ repos:
   domain: suites
   tier: critical
   purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
+  swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
 - name: ticketing-microservice
   path: .repos/ticketing-microservice
   type: backend-java
@@ -104,6 +112,7 @@ repos:
   domain: ticketing
   tier: critical
   purpose: Ticketing management, seat inventory, reservations, event access
+  swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
 - name: locations-microservice
   path: .repos/locations-microservice
   type: backend-java
@@ -112,3 +121,151 @@ repos:
   tier: critical
   purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP
     device management, IoT device twins sync
+  swagger_url: https://asvaw3devlocationsmicroservice.azurewebsites.net/locationsmicroservice/v3/api-docs
+- name: ambientcontrol-microservice
+  path: .repos/ambientcontrol-microservice
+  type: backend-java
+  owner: team-backend
+  domain: arena-experience
+  tier: standard
+  purpose: Ambient arena controls — lighting, sound, scoreboard, and environmental
+    automation
+  swagger_url: https://asvawudevambientcontrol.azurewebsites.net/ambientcontrol/v3/api-docs
+- name: backofhouse-microservice
+  path: .repos/backofhouse-microservice
+  type: backend-java
+  owner: team-backend
+  domain: operations
+  tier: standard
+  purpose: Back-of-house operations management, staff workflows, and internal tooling
+  swagger_url: https://asvaw3devbackofhouse.azurewebsites.net/backofhouse/v3/api-docs
+- name: commerce-microservice
+  path: .repos/commerce-microservice
+  type: backend-java
+  owner: team-backend
+  domain: commerce
+  tier: critical
+  purpose: Commerce catalog, ordering, and retail transaction management
+  swagger_url: https://asvaw3devcommerce.azurewebsites.net/commerce/v3/api-docs
+- name: configuration-microservice
+  path: .repos/configuration-microservice
+  type: backend-java
+  owner: team-backend
+  domain: platform
+  tier: standard
+  purpose: Centralized runtime configuration management for all platform services
+  swagger_url: https://asvaw3devconfiguration.azurewebsites.net/configuration/v3/api-docs
+- name: credentialid-microservice
+  path: .repos/credentialid-microservice
+  type: backend-java
+  owner: team-backend
+  domain: identity
+  tier: critical
+  purpose: Credential issuance and validation for physical and digital access (NFC,
+    QR, biometric)
+  swagger_url: https://asvaw3devcredentialid.azurewebsites.net/credentialid/v3/api-docs
+- name: datams-microservice
+  path: .repos/datams-microservice
+  type: backend-java
+  owner: team-backend
+  domain: data
+  tier: standard
+  purpose: Data management service — aggregation, transformation, and reporting pipelines
+  swagger_url: https://asvaw3devdatams.azurewebsites.net/datams/v3/api-docs
+- name: evcharge-microservice
+  path: .repos/evcharge-microservice
+  type: backend-java
+  owner: team-backend
+  domain: parking
+  tier: standard
+  purpose: EV charging station management, session tracking, and billing integration
+  swagger_url: https://asvaw3devevcharge.azurewebsites.net/evcharge/v3/api-docs
+- name: incident-microservice
+  path: .repos/incident-microservice
+  type: backend-java
+  owner: team-backend
+  domain: operations
+  tier: standard
+  purpose: Incident reporting, tracking, and escalation for arena operations
+  swagger_url: https://asvaw3devincident.azurewebsites.net/incident/v3/api-docs
+- name: nba-microservice
+  path: .repos/nba-microservice
+  type: backend-java
+  owner: team-backend
+  domain: entertainment
+  tier: standard
+  purpose: NBA data integration — live game feeds, scores, player stats, and schedule
+    sync
+  swagger_url: https://asvaw3devnba.azurewebsites.net/nba/v3/api-docs
+- name: notifications-microservice
+  path: .repos/notifications-microservice
+  type: backend-java
+  owner: team-backend
+  domain: notifications
+  tier: standard
+  purpose: Push notifications, in-app alerts, and SMS/email delivery for fan and staff
+    communications
+  swagger_url: https://asvaw3devnotifications.azurewebsites.net/notifications/v3/api-docs
+- name: offlinecache-microservice
+  path: .repos/offlinecache-microservice
+  type: backend-java
+  owner: team-backend
+  domain: platform
+  tier: standard
+  purpose: Offline cache management — pre-computation and serving of data for low-latency
+    mobile access
+  swagger_url: https://asvaw3devofflinecache.azurewebsites.net/offlinecache/v3/api-docs
+- name: preferences-microservice
+  path: .repos/preferences-microservice
+  type: backend-java
+  owner: team-backend
+  domain: identity
+  tier: standard
+  purpose: User preferences and personalization settings (notifications, accessibility,
+    favorites)
+  swagger_url: https://asvaw3devpreferences.azurewebsites.net/preferences/v3/api-docs
+- name: purchasenotifications-microservice
+  path: .repos/purchasenotifications-microservice
+  type: backend-java
+  owner: team-backend
+  domain: commerce
+  tier: standard
+  purpose: Purchase confirmation and transactional notification delivery for commerce
+    events
+  swagger_url: https://asvaw3devpurchasenotifications.azurewebsites.net/purchasenotifications/v3/api-docs
+- name: queuemanagement-microservice
+  path: .repos/queuemanagement-microservice
+  type: backend-java
+  owner: team-backend
+  domain: operations
+  tier: standard
+  purpose: Virtual queue management for concessions, merchandise, and high-demand
+    entry points
+  swagger_url: https://asvaw3devqueuemanagement.azurewebsites.net/queuemanagement/v3/api-docs
+- name: replayengine-microservice
+  path: .repos/replayengine-microservice
+  type: backend-java
+  owner: team-backend
+  domain: entertainment
+  tier: standard
+  purpose: In-arena instant replay engine — clip capture, processing, and fan display
+    distribution
+  swagger_url: https://asvaw3devreplayengine.azurewebsites.net/replayengine/v3/api-docs
+- name: seatpresence-microservice
+  path: .repos/seatpresence-microservice
+  type: backend-java
+  owner: team-backend
+  domain: access-control
+  tier: standard
+  purpose: Real-time seat occupancy detection and presence tracking for dynamic fan
+    experiences
+  swagger_url: https://asvaw3devseatpresence.azurewebsites.net/seatpresence/v3/api-docs
+- name: staff-microservice
+  path: .repos/staff-microservice
+  type: backend-java
+  owner: team-backend
+  domain: operations
+  tier: standard
+  purpose: Staff profile management, shift scheduling, role assignment, and internal
+    communications
+  swagger_url: https://asvaw3devstaff.azurewebsites.net/staff/v3/api-docs

@@ -275,6 +275,10 @@ def run_local(
             extractor = get_extractor(service_yaml.type)
             manifest = extractor.extract(effective_path, service_yaml)
 
+            # Enrich manifest with swagger_url from config (if provided)
+            if service_yaml.swagger_url:
+                manifest = manifest.model_copy(update={"swagger_url": service_yaml.swagger_url})
+
             # Write manifest
             manifest_data = json.loads(manifest.model_dump_json())
             storage.write_json(f"services/{name}/manifest.json", manifest_data)

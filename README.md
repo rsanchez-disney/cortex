@@ -198,7 +198,41 @@ purpose: >
   One to three sentences describing the service.
 ```
 
-Optional fields: `status`, `slack`, `runbook`, `jira_component`, `keywords`, `integration_notes`, `extractor_hints`, `branch`.
+Optional fields: `status`, `slack`, `runbook`, `jira_component`, `keywords`, `integration_notes`, `extractor_hints`, `branch`, `swagger_url`.
+
+### Adding a Backend-Java Service with Swagger URL
+
+All `backend-java` services in the IntuitDome platform expose live Swagger/OpenAPI docs hosted on Azure App Service. Add the `swagger_url` field directly in the config entry — it is pre-computed (no runtime IaC parsing required).
+
+**Formula (Dev environment default):**
+
+```
+https://asv{region}dev{webapp_name}.azurewebsites.net/{webapp_name}/v3/api-docs
+```
+
+Where `{webapp_name}` is the Azure App Service name (e.g. `identity`, `payments`) and `{region}` is:
+
+| Region acronym | Azure region | Used by |
+|---|---|---|
+| `aw3` | West US 3 (`westus3`) | Most services |
+| `awu` | West US (`westus`) | `identity`, `ambientcontrol` (app_service_index=5 in IaC) |
+
+**To determine the region for a new service**, look up `app_service_<name>` in the IaC `terraform.tfvars`. If the index resolves to `app_services_list[5]` or `app_services_list[6]` (both `westus`), use `awu`; otherwise use `aw3`.
+
+**Example config entry:**
+
+```yaml
+- name: my-new-microservice
+  url: https://dev.azure.com/IntuitDome/my-new-microservice/_git/my-new-microservice
+  type: backend-java
+  owner: team-backend
+  domain: my-domain
+  tier: standard
+  purpose: Short description of the service.
+  swagger_url: https://asvaw3devmynewmicroservice.azurewebsites.net/mynewmicroservice/v3/api-docs
+```
+
+The `swagger_url` flows automatically from the config into the extracted manifest and is surfaced by the `get_endpoint_contract` MCP tool when no OpenAPI spec file is present.
 
 See `schemas/service.schema.json` for the full schema.
 
