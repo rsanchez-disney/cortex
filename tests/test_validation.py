@@ -6,7 +6,6 @@ import pytest
 
 from atlas.validation import ValidationError, validate_service_yaml
 
-
 # Minimal valid service metadata dict
 _VALID_BASE = {
     "name": "test-app",

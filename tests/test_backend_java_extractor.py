@@ -494,7 +494,9 @@ class TestInfrastructureDetection:
     def test_redis_cache_detection(self, extractor: BackendJavaExtractor, tmp_path: Path) -> None:
         """Detects Redis as cache type from build.gradle dependency."""
         (tmp_path / "build.gradle").write_text(
-            "dependencies {\n    implementation 'org.springframework.boot:spring-boot-starter-data-redis:3.1.0'\n}\n"
+            "dependencies {\n"
+            "    implementation 'org.springframework.boot:"
+            "spring-boot-starter-data-redis:3.1.0'\n}\n"
         )
         cache_type = extractor._detect_cache_type(tmp_path)
         assert cache_type == "redis"
@@ -718,7 +720,9 @@ class TestGradleVariableResolution:
         # openapiVersion = '2.1.0' in ext block
         assert by_name["org.springdoc:springdoc-openapi-starter-webmvc-ui"].version == "2.1.0"
 
-    def test_gradle_ext_vars_with_inline_content(self, extractor: BackendJavaExtractor, tmp_path: Path) -> None:
+    def test_gradle_ext_vars_with_inline_content(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
         """Parses ext{} from synthetic build.gradle content."""
         (tmp_path / "build.gradle").write_text(
             "ext {\n    myLibVersion = '2.5.0'\n    otherVersion = '1.0'\n}\n"
@@ -802,7 +806,9 @@ class TestSummaryFiltering:
         """No @Operation annotation returns None."""
         assert extractor._extract_operation_summary("public void doSomething() {}") is None
 
-    def test_endpoints_in_fixture_have_clean_summaries(self, extractor: BackendJavaExtractor) -> None:
+    def test_endpoints_in_fixture_have_clean_summaries(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
         """All endpoint summaries in the fixture are human-readable (not paths)."""
         contracts = extractor.find_api_contracts(SAMPLE_BACKEND_JAVA_REPO)
         for ep in contracts[0].endpoints:
@@ -832,7 +838,8 @@ class TestProgrammaticKafkaListeners:
             "public class KafkaConsumerService {\n"
             "    private final KafkaListenerEndpointRegistry registry;\n"
             "    public void register() {\n"
-            "        MethodKafkaListenerEndpoint<String, String> ep = new MethodKafkaListenerEndpoint<>();\n"
+            "        MethodKafkaListenerEndpoint<String, String> ep ="
+            " new MethodKafkaListenerEndpoint<>();\n"
             "    }\n"
             "}\n"
         )
@@ -1002,7 +1009,11 @@ class TestRequestMappingPathAttr:
 
     def test_path_attribute_parsed(self, extractor: BackendJavaExtractor) -> None:
         """_extract_request_mapping_path parses path= attribute."""
-        content = '@RequestMapping(path = "/v1/admin", produces = "application/json")\npublic class MyController {}'
+        content = (
+            '@RequestMapping(path = "/v1/admin", '
+            'produces = "application/json")\n'
+            "public class MyController {}"
+        )
         result = extractor._extract_request_mapping_path(content)
         assert result == "/v1/admin"
 
@@ -1078,12 +1089,16 @@ class TestOperationDescriptionFallback:
         text = '@Operation(description = "Create entitlement record")'
         assert extractor._try_extract_op_attr(text, "description") == "Create entitlement record"
 
-    def test_try_extract_op_attr_missing_returns_none(self, extractor: BackendJavaExtractor) -> None:
+    def test_try_extract_op_attr_missing_returns_none(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
         """_try_extract_op_attr returns None when attribute is absent."""
         text = '@Operation(description = "Retrieve account")'
         assert extractor._try_extract_op_attr(text, "summary") is None
 
-    def test_description_endpoint_captured_in_fixture(self, extractor: BackendJavaExtractor) -> None:
+    def test_description_endpoint_captured_in_fixture(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
         """Fixture RewardsApi uses description= and those summaries are captured."""
         contracts = extractor.find_api_contracts(SAMPLE_BACKEND_JAVA_REPO)
         assert len(contracts) == 1
@@ -1197,7 +1212,10 @@ class TestVersionCatalog:
             'cosmos = "5.7.0"\n'
             "\n"
             "[libraries]\n"
-            'azure-cosmos = { module = "com.azure.spring:spring-cloud-azure-starter-data-cosmos", version.ref = "cosmos" }\n'
+            "azure-cosmos = { "
+            'module = "com.azure.spring:'
+            'spring-cloud-azure-starter-data-cosmos", '
+            'version.ref = "cosmos" }\n'
         )
         deps: list = []
         seen: set = set()
@@ -1219,7 +1237,8 @@ class TestVersionCatalog:
             'mapstruct = "1.5.5.Final"\n'
             "\n"
             "[libraries]\n"
-            'mapstruct = { group = "org.mapstruct", name = "mapstruct", version.ref = "mapstruct" }\n'
+            'mapstruct = { group = "org.mapstruct", '
+            'name = "mapstruct", version.ref = "mapstruct" }\n'
         )
         deps: list = []
         seen: set = set()
@@ -1373,7 +1392,7 @@ class TestKafkaProducerConsumerExtraction:
     def test_kafka_producer_detected_from_constant_ref(
         self, extractor: BackendJavaExtractor, tmp_path: Path
     ) -> None:
-        """kafkaTemplate.send(Topics.MY_TOPIC, ...) + constant class → resolved in kafka_produces."""
+        """kafkaTemplate.send(Topics.MY_TOPIC, ...) + constant class → resolved."""
         src = tmp_path / "src" / "main" / "java" / "com" / "example"
         src.mkdir(parents=True)
         (src / "TopicConsts.java").write_text(
@@ -1541,7 +1560,9 @@ class TestOutboundServiceCalls:
             'import org.springframework.web.reactive.function.client.WebClient;\n'
             'import org.springframework.beans.factory.annotation.Value;\n'
             'public class WebClientConfig {\n'
-            '    public WebClient rewardsWebClient(@Value("${services.rewards.base-url}") String url) {\n'
+            '    public WebClient rewardsWebClient('
+            '@Value("${services.rewards.base-url}") '
+            "String url) {\n"
             '        return WebClient.builder().baseUrl(url).build();\n'
             '    }\n'
             '}\n'
@@ -1608,7 +1629,7 @@ class TestValueInjectedKafkaProducers:
     def test_value_injected_field_with_default_resolved(
         self, extractor: BackendJavaExtractor, tmp_path: Path
     ) -> None:
-        """@Value("${key:default-topic}") String field → ProducerRecord<>(field) produces default."""
+        """@Value default-topic field → ProducerRecord produces default."""
         src = tmp_path / "src" / "main" / "java" / "com" / "example"
         src.mkdir(parents=True)
         (src / "EventPublisher.java").write_text(
@@ -1643,7 +1664,8 @@ class TestValueInjectedKafkaProducers:
             '    @Value("${kafka.topic.events:real-topic-name}")\n'
             '    private String topicField;\n'
             '    void publish() {\n'
-            '        ProducerRecord<String,String> producerRecord = new ProducerRecord<>(topicField, "x");\n'
+            "        ProducerRecord<String,String> producerRecord ="
+            ' new ProducerRecord<>(topicField, "x");\n'
             '        kafkaTemplate.send(producerRecord);\n'
             '    }\n'
             '}\n'
@@ -2072,7 +2094,9 @@ class TestYamlValueIsSpringElResolution:
             "spring:\n"
             "  kafka:\n"
             "    topic:\n"
-            "      locations-config-changed: ${LOCATIONS_CONFIG_CHANGED_TOPIC:locations-config-changed}\n"
+            "      locations-config-changed: "
+            "${LOCATIONS_CONFIG_CHANGED_TOPIC:"
+            "locations-config-changed}\n"
         )
 
         # Publisher receives topic as method parameter (unresolvable at call site)

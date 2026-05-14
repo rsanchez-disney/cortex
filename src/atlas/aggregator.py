@@ -7,7 +7,7 @@ and handles failed extractions.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -77,7 +77,7 @@ def aggregate(storage: StorageBackend) -> PlatformGraph:
                 failed.append(
                     ExtractionError(
                         repo=repo_name,
-                        timestamp=datetime.now(timezone.utc),
+                        timestamp=datetime.now(UTC),
                         error=f"Failed to process manifest: {e}",
                         phase="aggregation",
                     )
@@ -98,7 +98,7 @@ def aggregate(storage: StorageBackend) -> PlatformGraph:
                 failed.append(
                     ExtractionError(
                         repo=repo_name,
-                        timestamp=datetime.now(timezone.utc),
+                        timestamp=datetime.now(UTC),
                         error="Failed to read extraction error file",
                         phase="aggregation",
                     )
@@ -130,7 +130,7 @@ def aggregate(storage: StorageBackend) -> PlatformGraph:
         communication=communication,
         failed_extractions=failed,
         metadata=GraphMetadata(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             version=__version__,
             service_count=len(services),
         ),
@@ -442,10 +442,10 @@ def _resolve_api_call_edges_by_interface(
     """
     # Build backend service stem index
     # Strip common mobile/backend suffixes to get the bare service name
-    _IFACE_SUFFIXES = re.compile(
+    iface_suffixes = re.compile(
         r'(HttpApi|Api|Service|Endpoint|Client|Repository|Repo)$'
     )
-    _SVC_SUFFIXES = re.compile(
+    svc_suffixes = re.compile(
         r'[_-](microservice|service|ms|api|svc)$', re.IGNORECASE
     )
 
@@ -455,14 +455,14 @@ def _resolve_api_call_edges_by_interface(
     for svc in services:
         if svc.type in ("android", "ios"):
             continue
-        stem = _SVC_SUFFIXES.sub("", svc.name).lower().replace("-", "").replace("_", "")
+        stem = svc_suffixes.sub("", svc.name).lower().replace("-", "").replace("_", "")
         if stem:
             backend_stems[stem] = svc.name
 
     def _interface_stems(iface_name: str) -> list[str]:
         """Split camelCase interface name into candidate match stems."""
         # Strip known suffixes first
-        stripped = _IFACE_SUFFIXES.sub("", iface_name)
+        stripped = iface_suffixes.sub("", iface_name)
         # CamelCase split: ["Ticketing"] or ["Public", "Http"]
         words = re.findall(r'[A-Z][a-z0-9]*|[a-z0-9]+', stripped)
         stems = []
@@ -500,7 +500,12 @@ def _resolve_api_call_edges_by_interface(
                 for backend_stem, backend_name in backend_stems.items():
                     if backend_name not in service_names or backend_name == caller:
                         continue
-                    if iface_stem == backend_stem or iface_stem.startswith(backend_stem) or backend_stem.startswith(iface_stem):
+                    stems_match = (
+                        iface_stem == backend_stem
+                        or iface_stem.startswith(backend_stem)
+                        or backend_stem.startswith(iface_stem)
+                    )
+                    if stems_match:
                         edge_key = (caller, backend_name)
                         if edge_key not in seen:
                             seen.add(edge_key)

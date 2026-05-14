@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -133,7 +133,7 @@ class AndroidExtractor(Extractor):
             ]
             if service_yaml.integration_notes
             else [],
-            extracted_at=datetime.now(timezone.utc),
+            extracted_at=datetime.now(UTC),
             extractor_version=__version__,
             source_repo=source_repo,
         )
@@ -282,12 +282,12 @@ class AndroidExtractor(Extractor):
         Excludes build/ and generated/ directories to avoid counting
         KSP/KAPT-generated Java stubs inflating the Java count.
         """
-        _EXCLUDED_DIRS = {"build", "generated", ".gradle"}
+        excluded_dirs = {"build", "generated", ".gradle"}
 
         def _count_files(ext: str) -> int:
             count = 0
             for p in root.rglob(f"*{ext}"):
-                if not any(part in _EXCLUDED_DIRS for part in p.parts):
+                if not any(part in excluded_dirs for part in p.parts):
                     count += 1
             return count
 
@@ -364,7 +364,7 @@ class AndroidExtractor(Extractor):
             "compile_sdk": None,
         }
 
-        _SDK_PATTERNS: list[tuple[str, str]] = [
+        sdk_patterns: list[tuple[str, str]] = [
             ("min_sdk", r"minSdk\s*[=:]\s*(\S+)"),
             ("target_sdk", r"targetSdk\s*[=:]\s*(\S+)"),
             ("compile_sdk", r"compileSdk\s*[=:]\s*(\S+)"),
@@ -372,7 +372,7 @@ class AndroidExtractor(Extractor):
 
         for gf in gradle_files:
             content = gf.read_text()
-            for key, pattern in _SDK_PATTERNS:
+            for key, pattern in sdk_patterns:
                 if raw[key] is None:
                     m = re.search(pattern, content)
                     if m:

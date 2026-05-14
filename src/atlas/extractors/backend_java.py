@@ -19,7 +19,7 @@ Extracts:
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -146,7 +146,7 @@ class BackendJavaExtractor(Extractor):
                 if service_yaml.integration_notes
                 else []
             ),
-            extracted_at=datetime.now(timezone.utc),
+            extracted_at=datetime.now(UTC),
             extractor_version=__version__,
             source_repo=source_repo,
         )
@@ -310,7 +310,9 @@ class BackendJavaExtractor(Extractor):
 
         return vars_map
 
-    def _resolve_gradle_version(self, raw_version: str | None, vars_map: dict[str, str]) -> str | None:
+    def _resolve_gradle_version(
+        self, raw_version: str | None, vars_map: dict[str, str]
+    ) -> str | None:
         """Resolve a version string that may contain a Gradle variable reference.
 
         Handles:
@@ -325,7 +327,9 @@ class BackendJavaExtractor(Extractor):
             return vars_map.get(m.group(1), raw_version)
         return raw_version
 
-    def _parse_dependencies(self, root: Path, gradle_vars: dict[str, str] | None = None) -> list[Dependency]:
+    def _parse_dependencies(
+        self, root: Path, gradle_vars: dict[str, str] | None = None
+    ) -> list[Dependency]:
         """Parse dependencies from build.gradle (Groovy or Kotlin DSL) and libs.versions.toml."""
         deps: list[Dependency] = []
         seen: set[str] = set()
@@ -922,7 +926,11 @@ class BackendJavaExtractor(Extractor):
                     _add("kafka-consumer", class_name)
 
             # Programmatic Kafka listener registration
-            if "KafkaListenerEndpointRegistry" in content or "MethodKafkaListenerEndpoint" in content:
+            has_kafka_registry = (
+                "KafkaListenerEndpointRegistry" in content
+                or "MethodKafkaListenerEndpoint" in content
+            )
+            if has_kafka_registry:
                 if class_name is None:
                     class_name = self._extract_class_name(content, java_file)
                 if class_name:
@@ -1346,7 +1354,12 @@ class BackendJavaExtractor(Extractor):
                 for m in kafka_value_field_pattern.finditer(content):
                     el_expr = m.group(1)  # e.g. "${spring.kafka.topic.locations-config-changed}"
                     resolved = self._resolve_kafka_topic_ref(el_expr, merged, yaml_props)
-                    if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
+                    is_valid = (
+                        resolved
+                        and not self._is_java_constant_name(resolved)
+                        and resolved not in seen
+                    )
+                    if is_valid:
                         seen.add(resolved)
                         produces.append(resolved)
 
@@ -1521,9 +1534,6 @@ class BackendJavaExtractor(Extractor):
 
         # Phase B: scan Java source for WebClient.builder().baseUrl() and
         # HttpServiceProxyFactory + @HttpExchange declarative client patterns.
-        webclient_pattern = re.compile(
-            r"""WebClient\.builder\(\)\s*\.baseUrl\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*\)""",
-        )
         # Detect Spring 6 declarative HTTP client base URL injection.
         # Pattern: WebClient.builder().baseUrl(someVar) where someVar comes from @Value.
         # Also detect env-var or @Value references passed directly to baseUrl().
@@ -1552,12 +1562,29 @@ class BackendJavaExtractor(Extractor):
                     inner = re.fullmatch(r"\$\{([^}]+)\}", raw)
                     if inner:
                         prop_key = inner.group(1).split(":")[0]
-                        default_url = inner.group(1).split(":", 1)[1] if ":" in inner.group(1) else None
+                        inner_val = inner.group(1)
+                        default_url = (
+                            inner_val.split(":", 1)[1]
+                            if ":" in inner_val
+                            else None
+                        )
                         url_value = flat_props.get(prop_key) or default_url
-                        if url_value and not self._resolve_spring_el_topic(url_value).startswith("http"):
+                        resolved_el = self._resolve_spring_el_topic(
+                            url_value
+                        ) if url_value else ""
+                        if url_value and not resolved_el.startswith("http"):
                             url_value = self._resolve_spring_el_topic(raw)
-                        if url_value and prop_key not in seen_keys and not _is_excluded_url(prop_key):
-                            resolved_url = self._resolve_spring_el_topic(url_value) if url_value.startswith("${") else url_value
+                        is_candidate = (
+                            url_value
+                            and prop_key not in seen_keys
+                            and not _is_excluded_url(prop_key)
+                        )
+                        if is_candidate:
+                            resolved_url = (
+                                self._resolve_spring_el_topic(url_value)
+                                if url_value.startswith("${")
+                                else url_value
+                            )
                             if resolved_url.startswith("http"):
                                 seen_keys.add(prop_key)
                                 calls.append(
@@ -1648,7 +1675,8 @@ class BackendJavaExtractor(Extractor):
             for pattern, db_type in db_patterns:
                 if db_type in detected:
                     continue
-                if re.search(rf"(?:url|driver[_-]class[_-]name|datasource)\s*:.*{pattern}", content):
+                db_re = rf"(?:url|driver[_-]class[_-]name|datasource)\s*:.*{pattern}"
+                if re.search(db_re, content):
                     detected.append(db_type)
                 elif re.search(rf"jdbc:{pattern}", content):
                     detected.append(db_type)
@@ -1668,7 +1696,11 @@ class BackendJavaExtractor(Extractor):
             (r"com\.microsoft\.sqlserver", "sqlserver"),
             (r"com\.oracle", "oracle"),
             (r"com\.h2database:h2", "h2"),
-            (r"com\.azure:azure-spring-data-cosmos|spring-cloud-azure-starter-data-cosmos|azure-cosmos", "cosmos"),
+            (
+                r"com\.azure:azure-spring-data-cosmos"
+                r"|spring-cloud-azure-starter-data-cosmos|azure-cosmos",
+                "cosmos",
+            ),
             (r"org\.springframework\.data:spring-data-mongodb|de\.flapdoodle", "mongodb"),
             (r"com\.datastax|spring-data-cassandra", "cassandra"),
         ]

@@ -9,20 +9,17 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import List, Optional
 
 import structlog
 import typer
 import yaml
 
-from atlas import __version__
 from atlas.extractors import ExtractorError, get_extractor
 from atlas.repo_cloner import inject_pat
-from atlas.schema import ExtractionError, ServiceManifest
+from atlas.schema import ExtractionError
 from atlas.storage import StorageBackend, StorageError
 from atlas.validation import ValidationError, validate_service_yaml
 
@@ -50,13 +47,15 @@ def extract(
     service_type: str = typer.Option(..., "--type", help="Service type (android, ios, etc.)"),
     owner: str = typer.Option(..., help="Owning team"),
     domain: str = typer.Option(..., help="Business domain"),
-    tier: str = typer.Option(..., help="Service tier (critical, standard, experimental, deprecated)"),
+    tier: str = typer.Option(
+        ..., help="Service tier (critical, standard, experimental, deprecated)"
+    ),
     purpose: str = typer.Option(..., help="Short description of the service purpose"),
     status: str = typer.Option("active", help="Service status (active, deprecated, archived)"),
-    slack: Optional[str] = typer.Option(None, help="Slack channel (e.g. #team-mobile)"),
-    runbook: Optional[str] = typer.Option(None, help="Runbook URL"),
-    jira_component: Optional[str] = typer.Option(None, help="Jira component name"),
-    keywords: Optional[List[str]] = typer.Option(None, help="Keywords (repeat for multiple)"),
+    slack: str | None = typer.Option(None, help="Slack channel (e.g. #team-mobile)"),
+    runbook: str | None = typer.Option(None, help="Runbook URL"),
+    jira_component: str | None = typer.Option(None, help="Jira component name"),
+    keywords: list[str] | None = typer.Option(None, help="Keywords (repeat for multiple)"),
 ) -> None:
     """Extract metadata from a single repo and write manifest to storage."""
     storage = StorageBackend.from_config(storage_backend, storage_bucket)
@@ -103,7 +102,7 @@ def extract(
         # Write error file
         error = ExtractionError(
             repo=repo_name,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             error=str(e),
             phase="validation" if isinstance(e, ValidationError) else "extraction",
         )
@@ -116,7 +115,7 @@ def extract(
     except Exception as e:
         error = ExtractionError(
             repo=repo_name,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             error=str(e),
             phase="extraction",
         )
@@ -143,7 +142,7 @@ def aggregate(
     storage.write_json("graph/latest.json", graph_data)
 
     # Write timestamped snapshot
-    timestamp = datetime.now(timezone.utc).isoformat().replace(":", "-")
+    timestamp = datetime.now(UTC).isoformat().replace(":", "-")
     storage.write_json(f"graph/{timestamp}.json", graph_data)
 
     typer.echo(
@@ -202,26 +201,26 @@ def report(
 
     # Write run summary to storage
     run_summary = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "total_repos": total,
         "successful": len(services),
         "failed": len(failures),
         "domains": domains,
         "failures": failures,
     }
-    timestamp = datetime.now(timezone.utc).isoformat().replace(":", "-")
+    timestamp = datetime.now(UTC).isoformat().replace(":", "-")
     storage.write_json(f"runs/{timestamp}.json", run_summary)
 
 
 @app.command(name="run-local")
 def run_local(
-    config: Optional[Path] = typer.Option(
+    config: Path | None = typer.Option(
         None, help="Path to repos config YAML (repos-local.yaml)"
     ),
-    repo_path: Optional[Path] = typer.Option(
+    repo_path: Path | None = typer.Option(
         None, help="Single repo path (alternative to --config)"
     ),
-    repo_name: Optional[str] = typer.Option(None, help="Single repo name (used with --repo-path)"),
+    repo_name: str | None = typer.Option(None, help="Single repo name (used with --repo-path)"),
     output_dir: Path = typer.Option("./atlas-output", help="Output directory for local storage"),
 ) -> None:
     """Run the full extract->aggregate->report pipeline locally.
@@ -290,7 +289,7 @@ def run_local(
             # Fail-soft: log error, continue with other repos
             error = ExtractionError(
                 repo=name,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 error=str(e),
                 phase="extraction",
             )
@@ -311,7 +310,7 @@ def run_local(
     graph_data = json.loads(graph.model_dump_json())
     storage.write_json("graph/latest.json", graph_data)
 
-    timestamp = datetime.now(timezone.utc).isoformat().replace(":", "-")
+    timestamp = datetime.now(UTC).isoformat().replace(":", "-")
     storage.write_json(f"graph/{timestamp}.json", graph_data)
 
     # Summary
@@ -360,7 +359,8 @@ def _load_repos_config(config_path: Path) -> list[dict]:
         missing = _REQUIRED_SERVICE_FIELDS - set(repo.keys())
         if missing:
             raise typer.BadParameter(
-                f"Repo '{repo['name']}' is missing required service fields: {', '.join(sorted(missing))}"
+                f"Repo '{repo['name']}' is missing required service fields: "
+                f"{', '.join(sorted(missing))}"
             )
 
     return repos

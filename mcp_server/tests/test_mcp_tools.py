@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from atlas.storage import LocalStorageBackend
-from mcp_server.server import AtlasMCPServer, _find_dependents, _score_service, _tokenize
+from mcp_server.server import AtlasMCPServer, _score_service, _tokenize
 
 
 @pytest.fixture

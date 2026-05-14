@@ -66,6 +66,7 @@ def validate_service_yaml(data: dict) -> ServiceYaml:
     except PydanticValidationError as e:
         error_messages = [err["msg"] for err in e.errors()]
         raise ValidationError(
-            f"Pydantic validation failed with {len(error_messages)} error(s): {'; '.join(error_messages)}",
+            f"Pydantic validation failed with {len(error_messages)} "
+            f"error(s): {'; '.join(error_messages)}",
             errors=error_messages,
         ) from e

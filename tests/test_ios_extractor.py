@@ -364,3 +364,483 @@ class TestApiCallExtraction:
         staff_paths = [c.path for c in staff_calls]
         assert "/staff/access" in staff_paths
         assert "/fan/loyalty" not in staff_paths
+
+    def test_relative_url_endpoint_protocol_detected(self, tmp_path: Path) -> None:
+        """EndPointProtocol pattern with var relativeURL is detected."""
+        ep_dir = tmp_path / "MyApp" / "Sources" / "Endpoint"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "SuiteEndPoint.swift").write_text(
+            "enum SuiteEndpoint {\n"
+            "    case getSuite\n"
+            "    case updateAccess\n"
+            "}\n"
+            "\n"
+            "extension SuiteEndpoint: EndPointProtocol {\n"
+            "    var relativeURL: String {\n"
+            "        switch self {\n"
+            "        case .getSuite:\n"
+            '            return "/suite/packages/exists"\n'
+            "        case .updateAccess:\n"
+            '            return "/suite/admins/access"\n'
+            "        }\n"
+            "    }\n"
+            "    var method: String {\n"
+            "        switch self {\n"
+            "        case .getSuite:\n"
+            "            return URLRequestMethod.get.rawValue\n"
+            "        case .updateAccess:\n"
+            "            return URLRequestMethod.put.rawValue\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        extractor = IOSExtractor()
+        calls = extractor._parse_api_calls(tmp_path)
+        paths = {c.path: c.method for c in calls}
+        assert "/suite/packages/exists" in paths
+        assert paths["/suite/packages/exists"] == "GET"
+        assert "/suite/admins/access" in paths
+        assert paths["/suite/admins/access"] == "PUT"
+
+    def test_url_request_method_rawvalue_detected(self, tmp_path: Path) -> None:
+        """URLRequestMethod.delete.rawValue method pattern is detected."""
+        ep_dir = tmp_path / "MyApp" / "Data" / "Endpoint"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "AdminEndPoint.swift").write_text(
+            "enum AdminEndpoint {\n"
+            "    case deleteAdmin\n"
+            "    case addAdmin\n"
+            "}\n"
+            "\n"
+            "extension AdminEndpoint: EndPointProtocol {\n"
+            "    var relativeURL: String {\n"
+            "        switch self {\n"
+            "        case .deleteAdmin:\n"
+            '            return "/admins/remove"\n'
+            "        case .addAdmin:\n"
+            '            return "/admins/add"\n'
+            "        }\n"
+            "    }\n"
+            "    var method: String {\n"
+            "        switch self {\n"
+            "        case .deleteAdmin:\n"
+            "            return URLRequestMethod.delete.rawValue\n"
+            "        case .addAdmin:\n"
+            "            return URLRequestMethod.post.rawValue\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        extractor = IOSExtractor()
+        calls = extractor._parse_api_calls(tmp_path)
+        paths = {c.path: c.method for c in calls}
+        assert paths.get("/admins/remove") == "DELETE"
+        assert paths.get("/admins/add") == "POST"
+
+    def test_per_case_method_cross_reference(self, tmp_path: Path) -> None:
+        """Per-case methods are cross-referenced with var relativeURL paths."""
+        ep_dir = tmp_path / "MyApp" / "Sources" / "Endpoint"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "MixedEndPoint.swift").write_text(
+            "enum MixedEndpoint {\n"
+            "    case getItems\n"
+            "    case createItem\n"
+            "    case deleteItem\n"
+            "}\n"
+            "\n"
+            "extension MixedEndpoint: EndPointProtocol {\n"
+            "    var relativeURL: String {\n"
+            "        switch self {\n"
+            "        case .getItems:\n"
+            '            return "/items/list"\n'
+            "        case .createItem:\n"
+            '            return "/items/create"\n'
+            "        case .deleteItem:\n"
+            '            return "/items/delete"\n'
+            "        }\n"
+            "    }\n"
+            "    var method: String {\n"
+            "        switch self {\n"
+            "        case .getItems:\n"
+            "            return URLRequestMethod.get.rawValue\n"
+            "        case .createItem:\n"
+            "            return URLRequestMethod.post.rawValue\n"
+            "        case .deleteItem:\n"
+            "            return URLRequestMethod.delete.rawValue\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        extractor = IOSExtractor()
+        calls = extractor._parse_api_calls(tmp_path)
+        call_map = {c.path: c.method for c in calls}
+        assert call_map["/items/list"] == "GET"
+        assert call_map["/items/create"] == "POST"
+        assert call_map["/items/delete"] == "DELETE"
+
+    def test_multi_case_method_mapping(self, tmp_path: Path) -> None:
+        """Multi-case lines like 'case .a, .b:' map all case names to the same value."""
+        ep_dir = tmp_path / "MyApp" / "Sources" / "Endpoint"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "BatchEndPoint.swift").write_text(
+            "enum BatchEndpoint {\n"
+            "    case getList\n"
+            "    case getDetail\n"
+            "    case createNew\n"
+            "}\n"
+            "\n"
+            "extension BatchEndpoint: EndPointProtocol {\n"
+            "    var relativeURL: String {\n"
+            "        switch self {\n"
+            "        case .getList:\n"
+            '            return "/batch/list"\n'
+            "        case .getDetail:\n"
+            '            return "/batch/detail"\n'
+            "        case .createNew:\n"
+            '            return "/batch/new"\n'
+            "        }\n"
+            "    }\n"
+            "    var method: String {\n"
+            "        switch self {\n"
+            "        case .getList, .getDetail:\n"
+            "            return URLRequestMethod.get.rawValue\n"
+            "        case .createNew:\n"
+            "            return URLRequestMethod.post.rawValue\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        extractor = IOSExtractor()
+        calls = extractor._parse_api_calls(tmp_path)
+        call_map = {c.path: c.method for c in calls}
+        assert call_map["/batch/list"] == "GET"
+        assert call_map["/batch/detail"] == "GET"
+        assert call_map["/batch/new"] == "POST"
+
+    def test_endpoint_suffix_case_insensitive(self, tmp_path: Path) -> None:
+        """Both Endpoint.swift and EndPoint.swift suffixes are detected as API files."""
+        src_dir = tmp_path / "MyApp" / "Sources"
+        src_dir.mkdir(parents=True)
+        (src_dir / "UserEndPoint.swift").write_text(
+            "enum UserEndpoint {\n"
+            "    var relativeURL: String {\n"
+            '        return "/users/profile"\n'
+            "    }\n"
+            "}\n"
+        )
+        extractor = IOSExtractor()
+        calls = extractor._parse_api_calls(tmp_path)
+        paths = [c.path for c in calls]
+        assert "/users/profile" in paths
+
+    def test_fixture_has_endpoint_protocol_calls(self) -> None:
+        """The sample iOS fixture SuiteEndPoint.swift → api_calls with correct methods."""
+        extractor = IOSExtractor()
+        calls = extractor._parse_api_calls(SAMPLE_IOS_REPO)
+        call_map = {c.path: c.method for c in calls}
+        assert "/suite-admin-management/admins/self/packages/exists" in call_map
+        assert call_map["/suite-admin-management/admins/self/packages/exists"] == "GET"
+        # The interpolation paths should use {param}
+        assert "/suite-admin-management/admins/{param}/access" in call_map
+        assert call_map["/suite-admin-management/admins/{param}/access"] == "PUT"
+
+
+# ---------------------------------------------------------------------------
+# TestSharedComponentScanning
+# ---------------------------------------------------------------------------
+
+
+class TestSharedComponentScanning:
+    """Tests for _find_shared_component_dirs() and shared directory scanning."""
+
+    def test_common_components_dir_found(self, tmp_path: Path) -> None:
+        """Directories containing 'Common' are returned as shared dirs."""
+        (tmp_path / "LaClippers" / "Sources").mkdir(parents=True)
+        (tmp_path / "LaLiga" / "CommonComponents" / "Data").mkdir(parents=True)
+        extractor = IOSExtractor()
+        shared = extractor._find_shared_component_dirs(tmp_path, "LaClippers")
+        shared_names = [d.name for d in shared]
+        assert "CommonComponents" in shared_names
+
+    def test_target_dir_excluded(self, tmp_path: Path) -> None:
+        """The target directory itself is not included in shared dirs."""
+        (tmp_path / "LaClippers" / "Sources").mkdir(parents=True)
+        (tmp_path / "CommonShared").mkdir(parents=True)
+        extractor = IOSExtractor()
+        shared = extractor._find_shared_component_dirs(tmp_path, "LaClippers")
+        shared_names = [d.name for d in shared]
+        assert "LaClippers" not in shared_names
+
+    def test_shared_endpoints_included_in_extract(self, tmp_path: Path) -> None:
+        """When target_hint is set, shared component endpoints are included."""
+        # Target directory
+        fan_dir = tmp_path / "LaClippers" / "Sources" / "Endpoint"
+        fan_dir.mkdir(parents=True)
+        (fan_dir / "FanEndpoint.swift").write_text(
+            "enum FanEndpoint {\n"
+            "    var path: String {\n"
+            '        return "/fan/loyalty"\n'
+            "    }\n"
+            "}\n"
+        )
+        # Shared CommonComponents
+        shared_dir = tmp_path / "LaLiga" / "CommonComponents" / "Data" / "Endpoint"
+        shared_dir.mkdir(parents=True)
+        (shared_dir / "PaymentEndpoint.swift").write_text(
+            "enum PaymentEndpoint {\n"
+            "    var path: String {\n"
+            '        return "/payments/process"\n'
+            "    }\n"
+            "}\n"
+        )
+        # Create minimal project files
+        (tmp_path / "Package.swift").write_text(
+            "// swift-tools-version: 5.9\n"
+            "import PackageDescription\n"
+            "let package = Package(name: \"Test\")\n"
+        )
+        service_yaml = ServiceYaml(
+            name="test-fan-app",
+            type="ios",
+            owner="team",
+            domain="mobile",
+            tier="standard",
+            purpose="Test fan app",
+            extractor_hints={"target": "LaClippers"},
+        )
+        extractor = IOSExtractor()
+        manifest = extractor.extract(tmp_path, service_yaml)
+        paths = [c.path for c in manifest.api_calls]
+        assert "/fan/loyalty" in paths
+        assert "/payments/process" in paths
+
+
+# ---------------------------------------------------------------------------
+# TestDatabaseTypeDetection
+# ---------------------------------------------------------------------------
+
+
+class TestDatabaseTypeDetection:
+    """Tests for _detect_database_type()."""
+
+    def test_realm_from_dependency(self, tmp_path: Path) -> None:
+        """Realm dependency → database_type = 'realm'."""
+        from atlas.schema import Dependency
+        deps = [Dependency(name="realm-swift", version="10.45.0", source="Package.swift")]
+        extractor = IOSExtractor()
+        assert extractor._detect_database_type(deps, tmp_path) == "realm"
+
+    def test_realm_from_import(self, tmp_path: Path) -> None:
+        """import RealmSwift in source → database_type = 'realm'."""
+        src = tmp_path / "Sources"
+        src.mkdir()
+        (src / "DB.swift").write_text("import RealmSwift\nclass DB {}\n")
+        extractor = IOSExtractor()
+        assert extractor._detect_database_type([], tmp_path) == "realm"
+
+    def test_coredata_from_xcdatamodeld(self, tmp_path: Path) -> None:
+        """.xcdatamodeld bundle → database_type = 'coredata'."""
+        (tmp_path / "Model.xcdatamodeld").mkdir()
+        extractor = IOSExtractor()
+        assert extractor._detect_database_type([], tmp_path) == "coredata"
+
+    def test_grdb_from_dependency(self, tmp_path: Path) -> None:
+        """GRDB.swift dependency → database_type = 'sqlite'."""
+        from atlas.schema import Dependency
+        deps = [Dependency(name="GRDB.swift", version="6.0.0", source="Package.swift")]
+        extractor = IOSExtractor()
+        assert extractor._detect_database_type(deps, tmp_path) == "sqlite"
+
+    def test_swiftdata_from_import(self, tmp_path: Path) -> None:
+        """import SwiftData → database_type = 'swiftdata'."""
+        src = tmp_path / "Sources"
+        src.mkdir()
+        (src / "Store.swift").write_text("import SwiftData\n@Model class Item {}\n")
+        extractor = IOSExtractor()
+        assert extractor._detect_database_type([], tmp_path) == "swiftdata"
+
+    def test_no_database(self, tmp_path: Path) -> None:
+        """No database signals → database_type = None."""
+        src = tmp_path / "Sources"
+        src.mkdir()
+        (src / "App.swift").write_text("import UIKit\nclass App {}\n")
+        extractor = IOSExtractor()
+        assert extractor._detect_database_type([], tmp_path) is None
+
+    def test_fixture_detects_realm(self) -> None:
+        """The sample iOS fixture has RealmSwift → database_type = 'realm'."""
+        extractor = IOSExtractor()
+        deps = extractor._parse_dependencies(SAMPLE_IOS_REPO)
+        assert extractor._detect_database_type(deps, SAMPLE_IOS_REPO) == "realm"
+
+
+# ---------------------------------------------------------------------------
+# TestMinSdkFromDeploymentTarget
+# ---------------------------------------------------------------------------
+
+
+class TestMinSdkFromDeploymentTarget:
+    """Tests for min_sdk populated from deployment target."""
+
+    def test_min_sdk_in_manifest(self) -> None:
+        """Manifest includes min_sdk from deployment target."""
+        extractor = IOSExtractor()
+        service_yaml = ServiceYaml(
+            name="sample-ios",
+            type="ios",
+            owner="team-mobile",
+            domain="mobile",
+            tier="standard",
+            purpose="Test",
+        )
+        manifest = extractor.extract(SAMPLE_IOS_REPO, service_yaml)
+        assert manifest.min_sdk is not None
+        assert "16" in manifest.min_sdk
+
+
+# ---------------------------------------------------------------------------
+# TestPermissionsFromEntitlements
+# ---------------------------------------------------------------------------
+
+
+class TestPermissionsFromEntitlements:
+    """Tests for permissions populated from entitlements."""
+
+    def test_permissions_in_manifest(self) -> None:
+        """Manifest includes permissions from entitlements parsing."""
+        extractor = IOSExtractor()
+        service_yaml = ServiceYaml(
+            name="sample-ios",
+            type="ios",
+            owner="team-mobile",
+            domain="mobile",
+            tier="standard",
+            purpose="Test",
+        )
+        manifest = extractor.extract(SAMPLE_IOS_REPO, service_yaml)
+        assert "aps-environment" in manifest.permissions
+        assert "com.apple.developer.applesignin" in manifest.permissions
+
+
+# ---------------------------------------------------------------------------
+# TestFrameworkDetection
+# ---------------------------------------------------------------------------
+
+
+class TestFrameworkDetection:
+    """Tests for _detect_framework()."""
+
+    def test_swiftui_dominant(self, tmp_path: Path) -> None:
+        """More SwiftUI imports than UIKit → 'swiftui'."""
+        src = tmp_path / "Sources"
+        src.mkdir()
+        for i in range(5):
+            (src / f"View{i}.swift").write_text("import SwiftUI\nstruct V: View {}\n")
+        (src / "App.swift").write_text("import UIKit\nclass App {}\n")
+        extractor = IOSExtractor()
+        assert extractor._detect_framework(tmp_path) == "swiftui"
+
+    def test_uikit_dominant(self, tmp_path: Path) -> None:
+        """More UIKit imports than SwiftUI → 'uikit'."""
+        src = tmp_path / "Sources"
+        src.mkdir()
+        for i in range(5):
+            (src / f"VC{i}.swift").write_text("import UIKit\nclass VC {}\n")
+        (src / "Widget.swift").write_text("import SwiftUI\nstruct W: View {}\n")
+        extractor = IOSExtractor()
+        assert extractor._detect_framework(tmp_path) == "uikit"
+
+    def test_mixed_framework(self, tmp_path: Path) -> None:
+        """Both SwiftUI and UIKit present significantly → 'swiftui+uikit'."""
+        src = tmp_path / "Sources"
+        src.mkdir()
+        for i in range(3):
+            (src / f"View{i}.swift").write_text("import SwiftUI\nstruct V: View {}\n")
+        for i in range(3):
+            (src / f"VC{i}.swift").write_text("import UIKit\nclass VC {}\n")
+        extractor = IOSExtractor()
+        assert extractor._detect_framework(tmp_path) == "swiftui+uikit"
+
+    def test_no_framework(self, tmp_path: Path) -> None:
+        """No SwiftUI or UIKit imports → None."""
+        src = tmp_path / "Sources"
+        src.mkdir()
+        (src / "Util.swift").write_text("import Foundation\nfunc foo() {}\n")
+        extractor = IOSExtractor()
+        assert extractor._detect_framework(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# TestDependencyCategorization
+# ---------------------------------------------------------------------------
+
+
+class TestDependencyCategorization:
+    """Tests for dependency category assignment."""
+
+    def test_networking_category(self) -> None:
+        """Alamofire → category = 'networking'."""
+        from atlas.schema import Dependency
+        dep = Dependency(name="Alamofire", version="5.8.0", source="Package.swift")
+        extractor = IOSExtractor()
+        assert extractor._categorize_dependency(dep) == "networking"
+
+    def test_database_category(self) -> None:
+        """RealmSwift → category = 'database'."""
+        from atlas.schema import Dependency
+        dep = Dependency(name="RealmSwift", version="10.0", source="Podfile")
+        extractor = IOSExtractor()
+        assert extractor._categorize_dependency(dep) == "database"
+
+    def test_analytics_category(self) -> None:
+        """Firebase/Analytics → category = 'analytics'."""
+        from atlas.schema import Dependency
+        dep = Dependency(name="Firebase/Analytics", version="10.20.0", source="Podfile")
+        extractor = IOSExtractor()
+        assert extractor._categorize_dependency(dep) == "analytics"
+
+    def test_ui_category(self) -> None:
+        """Kingfisher → category = 'ui'."""
+        from atlas.schema import Dependency
+        dep = Dependency(name="Kingfisher", version="7.10.0", source="Package.swift")
+        extractor = IOSExtractor()
+        assert extractor._categorize_dependency(dep) == "ui"
+
+    def test_unknown_dependency_no_category(self) -> None:
+        """Unknown dependency → category = None."""
+        from atlas.schema import Dependency
+        dep = Dependency(name="SomeCustomLib", version="1.0", source="Package.swift")
+        extractor = IOSExtractor()
+        assert extractor._categorize_dependency(dep) is None
+
+    def test_categories_in_manifest(self) -> None:
+        """Dependencies in manifest have categories assigned."""
+        extractor = IOSExtractor()
+        service_yaml = ServiceYaml(
+            name="sample-ios",
+            type="ios",
+            owner="team-mobile",
+            domain="mobile",
+            tier="standard",
+            purpose="Test",
+        )
+        manifest = extractor.extract(SAMPLE_IOS_REPO, service_yaml)
+        dep_cats = {d.name: d.category for d in manifest.dependencies}
+        assert dep_cats.get("Alamofire") == "networking"
+        assert dep_cats.get("Kingfisher") == "ui"
+        assert dep_cats.get("Firebase/Analytics") == "analytics"
+        assert dep_cats.get("SwiftLint") == "tooling"
+
+    def test_auth_category(self) -> None:
+        """JWTDecode → category = 'auth'."""
+        from atlas.schema import Dependency
+        dep = Dependency(name="JWTDecode", version="3.0", source="Package.swift")
+        extractor = IOSExtractor()
+        assert extractor._categorize_dependency(dep) == "auth"
+
+    def test_testing_category(self) -> None:
+        """Quick → category = 'testing'."""
+        from atlas.schema import Dependency
+        dep = Dependency(name="Quick", version="7.0", source="Package.swift")
+        extractor = IOSExtractor()
+        assert extractor._categorize_dependency(dep) == "testing"

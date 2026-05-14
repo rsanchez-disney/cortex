@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import plistlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -64,6 +64,10 @@ class IOSExtractor(Extractor):
         bundle_id = self._find_bundle_id(effective_root, target_hint=target_hint)
         deployment_target = self._find_deployment_target(effective_root)
         dependencies = self._parse_dependencies(effective_root)
+        # Categorize dependencies
+        for dep in dependencies:
+            if dep.category is None:
+                dep.category = self._categorize_dependency(dep)
         modules = self._parse_local_packages(effective_root)
         targets = self._parse_targets(effective_root, target_hint=target_hint)
         build_variants = self._parse_build_configurations(effective_root, target_hint=target_hint)
@@ -71,14 +75,21 @@ class IOSExtractor(Extractor):
         integration_notes = self._extract_env_urls(effective_root, target_hint=target_hint)
         ci = self._detect_ci(repo_path)
         api_contracts = self.find_api_contracts(effective_root)
+        database_type = self._detect_database_type(dependencies, effective_root)
+        framework = self._detect_framework(effective_root)
         # Scope api_calls to the target directory when a target hint is set,
         # so monorepo apps (fan-app-ios vs staff-app-ios) don't share call lists.
-        api_calls_root = effective_root
+        # Also scan shared component directories (e.g. CommonComponents/).
+        api_calls: list[ApiCall] = []
         if target_hint:
             target_dir = self._resolve_target_dir(effective_root, target_hint)
             if target_dir and target_dir.is_dir():
-                api_calls_root = target_dir
-        api_calls = self._parse_api_calls(api_calls_root)
+                api_calls = self._parse_api_calls(target_dir)
+            # Also scan shared/common directories alongside the target directory
+            for shared_dir in self._find_shared_component_dirs(effective_root, target_hint):
+                api_calls.extend(self._parse_api_calls(shared_dir))
+        else:
+            api_calls = self._parse_api_calls(effective_root)
 
         # Build entry points: xcodeproj targets + feature domains from Sources/
         entry_points: list[EntryPoint] = []
@@ -112,6 +123,10 @@ class IOSExtractor(Extractor):
             runbook=service_yaml.runbook,
             jira_component=service_yaml.jira_component,
             application_id=bundle_id,
+            min_sdk=deployment_target,
+            framework=framework,
+            database_type=database_type,
+            permissions=entitlements,
             modules=modules,
             build_variants=build_variants,
             dependencies=dependencies,
@@ -121,7 +136,7 @@ class IOSExtractor(Extractor):
             runtime=None,
             ci=ci,
             integration_notes=all_notes,
-            extracted_at=datetime.now(timezone.utc),
+            extracted_at=datetime.now(UTC),
             extractor_version=__version__,
             source_repo=source_repo,
         )
@@ -137,19 +152,26 @@ class IOSExtractor(Extractor):
         1. Moya TargetType implementations: var path: String { "/v1/foo" }
            + var method: Moya.Method { .get }
         2. Alamofire router enums: enum Router { case getAccount } with path/method
-        3. URL path string literals matching /v\\d+/.* in networking files
-        4. Simple string constants in files under Network/, API/, Services/ directories
+        3. EndPointProtocol pattern: var relativeURL: String { switch self { ... } }
+           + var method: String { ... URLRequestMethod.get.rawValue ... }
+        4. URL path string literals matching /v\\d+/.* in networking files
+        5. Simple string constants in files under Network/, API/, Services/ directories
 
-        Focuses on files in Network/, API/, Services/, DataSource/, Remote/ directories.
-        Skips .build/, DerivedData/, Pods/ directories.
+        For files with switch-based ``var relativeURL`` and ``var method`` properties,
+        the extractor cross-references per-case paths with per-case methods by matching
+        case names to produce ``ApiCall(method=X, path=Y)``.
+
+        Focuses on files in Network/, API/, Services/, DataSource/, Remote/, Endpoint/
+        directories.  Skips .build/, DerivedData/, Pods/ directories.
         """
         excluded_dirs = {".build", "DerivedData", "Pods", "Carthage", ".git"}
-        network_dir_names = {"network", "api", "services", "datasource", "remote"}
+        network_dir_names = {"network", "api", "services", "datasource", "remote",
+                             "endpoint", "endpoints"}
 
         # Pattern: var path: String { return "/..." } or var path: String { "/..." }
-        # Relaxed: accepts any path starting with /, not just versioned ones (/v\d+/)
+        # Also matches var relativeURL: String { ... }
         path_prop_pattern = re.compile(
-            r'var\s+path\s*:\s*String\s*\{[^}]*?(?:return\s+)?["\'](/[^"\']+)["\']',
+            r'var\s+(?:path|relativeURL)\s*:\s*String\s*\{[^}]*?(?:return\s+)?["\'](/[^"\']+)["\']',
             re.DOTALL,
         )
         # Pattern: case .getAccount: return "/accounts" (any path starting with /)
@@ -160,11 +182,41 @@ class IOSExtractor(Extractor):
         # Pattern for detecting method from Moya-style or plain String method property
         # Handles: var method: Moya.Method { .get }
         #      and var method: String { ... "GET" ... }
+        #      and var method: String { ... URLRequestMethod.get.rawValue ... }
         method_prop_pattern = re.compile(
             r'var\s+method\s*:\s*(?:Moya\.)?(?:Method|String)\s*\{[^}]*?'
             r'(?:\.\s*(get|post|put|delete|patch)|["\']([Gg][Ee][Tt]|[Pp][Oo][Ss][Tt]'
-            r'|[Pp][Uu][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Aa][Tt][Cc][Hh])["\'])',
+            r'|[Pp][Uu][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Aa][Tt][Cc][Hh])["\']'
+            r'|URLRequestMethod\.\s*(get|post|put|patch|delete)\s*\.rawValue)',
             re.IGNORECASE | re.DOTALL,
+        )
+
+        # --- Switch-case cross-reference patterns ---
+        # Extract the body of ``var relativeURL: String { <body> }`` (or var path)
+        _url_body_re = re.compile(
+            r'var\s+(?:path|relativeURL)\s*:\s*String\s*\{(.*?)\n\s*\}',
+            re.DOTALL,
+        )
+        # Extract the body of ``var method: String { <body> }``
+        _method_body_re = re.compile(
+            r'var\s+method\s*:\s*(?:Moya\.)?(?:Method|String)\s*\{(.*?)\n\s*\}',
+            re.DOTALL,
+        )
+        # Match a case line like ``case .getSomething:`` or ``case .a, .b:``
+        _case_name_re = re.compile(
+            r'case\s+((?:\.\w+(?:\s*,\s*)?)+)\s*:',
+        )
+        # Match return value in a case arm: ``return "/path"``
+        _case_return_path_re = re.compile(
+            r'return\s+["\'](/[^"\']+)["\']',
+        )
+        # Match return value in a case arm: ``return URLRequestMethod.get.rawValue``
+        # or ``return "GET"`` or ``return .get``
+        _case_return_method_re = re.compile(
+            r'return\s+(?:URLRequestMethod\.\s*(\w+)\s*\.rawValue'
+            r'|["\']([Gg][Ee][Tt]|[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Aa][Tt][Cc][Hh])["\']'
+            r'|\.(\w+))',
+            re.IGNORECASE,
         )
 
         # Compiled filter for paths that look like placeholder/variable names rather than
@@ -185,6 +237,54 @@ class IOSExtractor(Extractor):
                 return True
             return False
 
+        def _parse_switch_cases(
+            body: str,
+            value_re: re.Pattern[str],
+            *,
+            is_method: bool = False,
+        ) -> dict[str, str]:
+            """Parse a switch body into a mapping of case name → value.
+
+            For multi-case lines like ``case .a, .b:`` all names get the same value.
+            ``default:`` arms are skipped.
+            """
+            mapping: dict[str, str] = {}
+            current_cases: list[str] = []
+            for line in body.splitlines():
+                stripped = line.strip()
+                case_m = _case_name_re.match(stripped)
+                if case_m:
+                    # Extract all dot-prefixed names: ".foo, .bar" → ["foo", "bar"]
+                    raw = case_m.group(1)
+                    current_cases = [
+                        n.strip().lstrip(".")
+                        for n in raw.split(",")
+                        if n.strip().startswith(".")
+                    ]
+                    # The return might be on the same line after the colon
+                    after_colon = stripped[case_m.end():]
+                    val_m = value_re.search(after_colon)
+                    if val_m:
+                        val = next((g for g in val_m.groups() if g is not None), None)
+                        if val:
+                            if is_method:
+                                val = val.upper()
+                            for name in current_cases:
+                                mapping[name] = val
+                        current_cases = []
+                    continue
+                if current_cases:
+                    val_m = value_re.search(stripped)
+                    if val_m:
+                        val = next((g for g in val_m.groups() if g is not None), None)
+                        if val:
+                            if is_method:
+                                val = val.upper()
+                            for name in current_cases:
+                                mapping[name] = val
+                        current_cases = []
+            return mapping
+
         api_calls: list[ApiCall] = []
         seen_paths: set[str] = set()
 
@@ -199,7 +299,7 @@ class IOSExtractor(Extractor):
                 swift_file.name.endswith(suffix)
                 for suffix in ("Router.swift", "API.swift", "Api.swift", "Target.swift",
                                "NetworkLayer.swift", "APIRouter.swift", "Endpoint.swift",
-                               "Service.swift", "Client.swift")
+                               "EndPoint.swift", "Service.swift", "Client.swift")
             )
             # Also include any file that seems to be a router/API definition
             try:
@@ -207,23 +307,52 @@ class IOSExtractor(Extractor):
             except OSError:
                 continue
 
-            # Relaxed gate: require "var path" and any "/" (not just "/v")
-            has_path_var = "var path" in content and "/" in content
+            # Relaxed gate: require "var path" or "var relativeURL" and any "/"
+            has_url_prop = "var path" in content or "var relativeURL" in content
+            has_path_var = has_url_prop and "/" in content
             if not (is_network_dir or is_api_file or has_path_var):
                 continue
 
             interface_name = swift_file.stem
 
-            # Detect method from Moya-style or plain String var method
+            # --- Try switch-case cross-reference for per-case method+path ---
+            url_body_m = _url_body_re.search(content)
+            method_body_m = _method_body_re.search(content)
+
+            if url_body_m and method_body_m:
+                path_map = _parse_switch_cases(
+                    url_body_m.group(1), _case_return_path_re
+                )
+                method_map = _parse_switch_cases(
+                    method_body_m.group(1), _case_return_method_re, is_method=True
+                )
+                if path_map:
+                    # Cross-reference: join on case name
+                    for case_name, raw_path in path_map.items():
+                        path = re.sub(r'\\\([^)]*\)', '{param}', raw_path)
+                        if path not in seen_paths and not _is_noise_path(path):
+                            seen_paths.add(path)
+                            method = method_map.get(case_name)
+                            api_calls.append(
+                                ApiCall(
+                                    method=method,
+                                    path=path,
+                                    interface_name=interface_name,
+                                )
+                            )
+                    # Skip the legacy path extraction for this file — already handled
+                    continue
+
+            # --- Fallback: legacy single-method detection ---
             method: str | None = None
             method_m = method_prop_pattern.search(content)
             if method_m:
-                # Group 1: .get/.post style; group 2: "GET"/"POST" string style
-                raw_method = method_m.group(1) or method_m.group(2)
+                # Group 1: .get/.post style; group 2: "GET" string; group 3: URLRequestMethod
+                raw_method = method_m.group(1) or method_m.group(2) or method_m.group(3)
                 if raw_method:
                     method = raw_method.upper()
 
-            # Find paths from var path { ... } pattern
+            # Find paths from var path / var relativeURL { ... } pattern
             for m in path_prop_pattern.finditer(content):
                 path = m.group(1)
                 # Treat Swift string interpolation \(...) like a path parameter {param}
@@ -253,6 +382,176 @@ class IOSExtractor(Extractor):
                     )
 
         return api_calls
+
+    # --- Database, framework, and dependency categorization ---
+
+    # Well-known iOS dependency categories
+    _DEPENDENCY_CATEGORIES: dict[str, str] = {
+        # Networking
+        "alamofire": "networking",
+        "moya": "networking",
+        "urlsession": "networking",
+        "grpc-swift": "networking",
+        "starscream": "networking",
+        "socket.io-client-swift": "networking",
+        # Database
+        "realm": "database",
+        "realmswift": "database",
+        "realm-swift": "database",
+        "grdb": "database",
+        "grdb.swift": "database",
+        "sqlite.swift": "database",
+        "corestore": "database",
+        "swiftdata": "database",
+        # Analytics / Observability
+        "firebase": "analytics",
+        "firebase/analytics": "analytics",
+        "firebaseanalytics": "analytics",
+        "firebase/crashlytics": "analytics",
+        "dd-sdk-ios": "analytics",
+        "datadogcore": "analytics",
+        "datadogrumswift": "analytics",
+        "datadogrum": "analytics",
+        "datadoglogs": "analytics",
+        "datadogtrace": "analytics",
+        "datadogcrashreporting": "analytics",
+        "aepsdk-core-ios": "analytics",
+        "aepsdk-analytics-ios": "analytics",
+        "aepsdk-places-ios": "analytics",
+        "amplitude-ios": "analytics",
+        "mixpanel-swift": "analytics",
+        # UI
+        "lottie": "ui",
+        "lottie-ios": "ui",
+        "sdwebimage": "ui",
+        "sdwebimageswiftui": "ui",
+        "kingfisher": "ui",
+        "snapkit": "ui",
+        "swiftui-introspect": "ui",
+        "nuke": "ui",
+        "hero": "ui",
+        "icarousel": "ui",
+        # Auth
+        "microsoft-authentication-library-for-objc": "auth",
+        "msal": "auth",
+        "jwtdecode.swift": "auth",
+        "jwtdecode": "auth",
+        "appauth-ios": "auth",
+        # Maps
+        "mapsindoors-googlemaps-ios": "maps",
+        "googlemaps": "maps",
+        "mapbox-maps-ios": "maps",
+        # Media
+        "nbavideokit-ios": "media",
+        "avkit": "media",
+        # Security
+        "kount-ios-swift-package": "security",
+        "cryptoswift": "security",
+        # Testing
+        "quick": "testing",
+        "nimble": "testing",
+        "ohhttpstubs": "testing",
+        "snapshotting": "testing",
+        "swift-snapshot-testing": "testing",
+        # Lint / tooling
+        "swiftlint": "tooling",
+        "swiftformat": "tooling",
+    }
+
+    # Database libraries that map to database_type
+    _DATABASE_LIBS: dict[str, str] = {
+        "realm": "realm",
+        "realmswift": "realm",
+        "realm-swift": "realm",
+        "grdb": "sqlite",
+        "grdb.swift": "sqlite",
+        "sqlite.swift": "sqlite",
+        "corestore": "coredata",
+    }
+
+    def _detect_database_type(
+        self, dependencies: list[Dependency], root: Path
+    ) -> str | None:
+        """Detect the primary local database from dependencies and import patterns.
+
+        Priority:
+        1. Known database libraries in the dependency list
+        2. ``import RealmSwift``, ``import CoreData``, ``import SwiftData`` in source files
+        3. ``.xcdatamodeld`` bundle presence → CoreData
+        """
+        # 1. Check dependency names
+        for dep in dependencies:
+            db_type = self._DATABASE_LIBS.get(dep.name.lower())
+            if db_type:
+                return db_type
+
+        # 2. Check source imports
+        excluded = {".build", "DerivedData", "Pods", "Carthage", ".git"}
+        import_db_map = {
+            "import RealmSwift": "realm",
+            "import Realm": "realm",
+            "import CoreData": "coredata",
+            "import SwiftData": "swiftdata",
+            "import GRDB": "sqlite",
+        }
+        for swift_file in root.rglob("*.swift"):
+            if any(p in excluded for p in swift_file.parts):
+                continue
+            try:
+                content = swift_file.read_text(errors="replace")
+            except OSError:
+                continue
+            for import_str, db_type in import_db_map.items():
+                if import_str in content:
+                    return db_type
+
+        # 3. Check for .xcdatamodeld (CoreData model file)
+        for _ in root.rglob("*.xcdatamodeld"):
+            return "coredata"
+
+        return None
+
+    def _detect_framework(self, root: Path) -> str | None:
+        """Detect the primary UI framework by counting import statements.
+
+        Returns ``"swiftui"`` if SwiftUI imports dominate, ``"uikit"`` if UIKit
+        dominates, or ``"swiftui+uikit"`` if both are present in significant
+        numbers (neither below 20% of total).
+        """
+        excluded = {".build", "DerivedData", "Pods", "Carthage", ".git",
+                    "Tests", "UITests"}
+        swiftui_count = 0
+        uikit_count = 0
+
+        for swift_file in root.rglob("*.swift"):
+            if any(p in excluded for p in swift_file.parts):
+                continue
+            try:
+                content = swift_file.read_text(errors="replace")
+            except OSError:
+                continue
+            if "import SwiftUI" in content:
+                swiftui_count += 1
+            if "import UIKit" in content:
+                uikit_count += 1
+
+        total = swiftui_count + uikit_count
+        if total == 0:
+            return None
+
+        # Both significant (neither below 20% of total)
+        if swiftui_count > 0 and uikit_count > 0:
+            min_ratio = min(swiftui_count, uikit_count) / total
+            if min_ratio >= 0.2:
+                return "swiftui+uikit"
+
+        if swiftui_count >= uikit_count:
+            return "swiftui"
+        return "uikit"
+
+    def _categorize_dependency(self, dep: Dependency) -> str | None:
+        """Return the category for a dependency based on well-known library names."""
+        return self._DEPENDENCY_CATEGORIES.get(dep.name.lower())
 
     # --- Private parsing methods ---
 
@@ -836,6 +1135,46 @@ class IOSExtractor(Extractor):
                 keywords.append(kw)
         return keywords
 
+    def _find_shared_component_dirs(
+        self, root: Path, target_hint: str
+    ) -> list[Path]:
+        """Find shared/common component directories that should be scanned alongside
+        a target-scoped directory.
+
+        Returns directories containing "Common" or "Shared" in their name,
+        excluding other target directories and build artifacts.
+        """
+        shared_keywords = {"common", "shared"}
+        excluded = {".build", "deriveddata", "pods", "carthage", ".git"}
+        target_lower = target_hint.lower()
+
+        shared_dirs: list[Path] = []
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            child_lower = child.name.lower()
+            # Skip excluded dirs
+            if child_lower in excluded:
+                continue
+            # Skip the target dir itself (already scanned)
+            if child_lower == target_lower or child_lower.startswith(target_lower):
+                continue
+            # Include if name contains a shared keyword
+            if any(kw in child_lower for kw in shared_keywords):
+                shared_dirs.append(child)
+                continue
+            # Also search one level deeper for CommonComponents-style dirs
+            try:
+                for grandchild in child.iterdir():
+                    if grandchild.is_dir() and any(
+                        kw in grandchild.name.lower() for kw in shared_keywords
+                    ):
+                        shared_dirs.append(grandchild)
+            except OSError:
+                continue
+
+        return shared_dirs
+
     def _resolve_target_dir(self, root: Path, target_hint: str) -> Path | None:
         """Resolve the source directory for a given target name.
 
@@ -867,7 +1206,7 @@ class IOSExtractor(Extractor):
 
         When target_hint is provided, only the matching target directory is scanned.
         """
-        _GENERIC = {"Common", "Component", "Data", "UIComponent", "Sources"}
+        generic = {"Common", "Component", "Data", "UIComponent", "Sources"}
         domains: list[str] = []
         seen: set[str] = set()
 
@@ -876,7 +1215,7 @@ class IOSExtractor(Extractor):
             target_dir = self._resolve_target_dir(root, target_hint)
             candidates = [target_dir] if target_dir and target_dir.is_dir() else []
         else:
-            # Walk direct children of root that look like target directories (have a Sources/ subdir)
+            # Walk direct children of root that look like target dirs
             candidates = [child for child in root.iterdir() if child.is_dir()]
 
         for child in candidates:
@@ -889,7 +1228,7 @@ class IOSExtractor(Extractor):
                 # Normalise spaces away; use the no-space variant as canonical key
                 raw = feature_dir.name
                 normalised = raw.replace(" ", "").replace("_", "")
-                if normalised in _GENERIC or normalised in seen:
+                if normalised in generic or normalised in seen:
                     continue
                 seen.add(normalised)
                 # Prefer the name without spaces or underscores if it differs

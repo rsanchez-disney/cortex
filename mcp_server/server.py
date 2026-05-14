@@ -11,18 +11,16 @@ Supports both stdio and HTTP/SSE modes.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from mcp.server.fastmcp import FastMCP
 
 from atlas.storage import StorageBackend, StorageError
-from mcp.server.fastmcp import FastMCP
 
 logger = structlog.get_logger()
 
@@ -460,7 +458,7 @@ class AtlasMCPServer:
 
             # For backend services: try to fetch OpenAPI spec
             try:
-                spec_data = self._storage.read_bytes(f"services/{service}/openapi.yaml")
+                self._storage.read_bytes(f"services/{service}/openapi.yaml")
                 result = {
                     "service": service,
                     "method": method,
@@ -539,14 +537,14 @@ class AtlasMCPServer:
         """Log a tool call to storage for later review."""
         duration_ms = int((time.time() - start_time) * 1000)
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "tool": tool,
             "input": input_data,
             "output_summary": output_summary,
             "duration_ms": duration_ms,
         }
 
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
         log_key = f"logs/mcp/{date_str}.jsonl"
 
         try:

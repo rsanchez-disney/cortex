@@ -9,6 +9,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/Alamofire/Alamofire.git", from: "5.8.0"),
         .package(url: "https://github.com/onevcat/Kingfisher.git", from: "7.10.0"),
+        .package(url: "https://github.com/realm/realm-swift.git", from: "10.45.0"),
     ],
     targets: [
         .executableTarget(

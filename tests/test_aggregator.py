@@ -313,7 +313,10 @@ class TestCommunicationGraph:
 
     def test_extract_topic_name_with_default(self) -> None:
         """_extract_topic_name strips ${VAR:default} to just 'default'."""
-        assert _extract_topic_name("${IDENTITY_BLOCK_TOPIC:identity-block-account}") == "identity-block-account"
+        result = _extract_topic_name(
+            "${IDENTITY_BLOCK_TOPIC:identity-block-account}"
+        )
+        assert result == "identity-block-account"
 
     def test_extract_topic_name_no_default(self) -> None:
         """_extract_topic_name with ${VAR} returns the var name."""
