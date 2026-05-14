@@ -66,6 +66,12 @@ _EXCLUDED_DIRS = {"build", "generated", ".gradle", "out", "target"}
 # Source directories that contain non-production code — excluded from entry point scanning
 _TEST_DIR_SEGMENTS = {"test", "androidTest", "integrationTest"}
 
+# Pattern to identify URL-like config keys in YAML (base-url, base-uri, .url, etc.)
+_URL_KEY_PATTERN = re.compile(
+    r"(?:base[_-]?url|base[_-]?uri|\.url|\.host|\.endpoint|\.uri|url[_-]token)$",
+    re.IGNORECASE,
+)
+
 
 class BackendJavaExtractor(Extractor):
     """Extractor for Java/Spring Boot repositories."""
@@ -1466,21 +1472,25 @@ class BackendJavaExtractor(Extractor):
             Looks for keys matching *.base-url, *.url, *.host, *.endpoint, *.uri
             that contain HTTP URL values, excluding known infrastructure URLs
             (JDBC, Kafka bootstrap, Cosmos endpoints, Redis hosts, Azure App Config).
+            Also detects env-var-only Spring EL values (e.g., ``${NBA_BASE_URL:}``)
+            and emits outbound calls with ``env:<ENV_VAR>`` as the target URL.
 
         Phase B — Java source scanning:
-            Looks for WebClient.builder().baseUrl() patterns and @Value injection
-            to confirm and link config keys to service calls.
+            Looks for WebClient.builder().baseUrl() patterns, @Value injection
+            (both field-level and method-parameter-level) to confirm and link
+            config keys to service calls.
+
+        Phase C — @HttpExchange interface scanning:
+            Scans for Spring 6 declarative HTTP client interfaces annotated with
+            @HttpExchange and enriches outbound calls with client interface names
+            and endpoint paths.
 
         Returns a list of OutboundCall objects with target_url and config_key set.
         """
         calls: list[OutboundCall] = []
         seen_keys: set[str] = set()
 
-        # URL-like keys in YAML config
-        url_key_pattern = re.compile(
-            r"(?:base[_-]?url|\.url|\.host|\.endpoint|\.uri)$",
-            re.IGNORECASE,
-        )
+        url_key_pattern = _URL_KEY_PATTERN
 
         # Excluded URL patterns (infrastructure, not services)
         excluded_url_patterns = [
@@ -1502,43 +1512,84 @@ class BackendJavaExtractor(Extractor):
             ]
         ]
 
+        # Infrastructure YAML key patterns — keys under these prefixes are
+        # infrastructure config, not outbound service integrations
+        excluded_key_patterns = [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"^spring\.datasource\b",
+                r"^spring\.data\.redis\b",
+                r"^spring\.redis\b",
+                r"^spring\.cloud\.azure\.cosmos\b",
+                r"^spring\.kafka\b",
+                r"^spring\.cloud\.azure\.storage\b",
+                r"^spring\.cloud\.azure\.appconfiguration\b",
+                r"^management\.",
+                r"^eureka\.",
+                r"^server\.",
+                r"^logging\.",
+            ]
+        ]
+
         def _is_excluded_url(url: str) -> bool:
             return any(p.search(url) for p in excluded_url_patterns)
 
-        # Load YAML config and scan for URL keys
+        def _is_excluded_key(key: str) -> bool:
+            return any(p.search(key) for p in excluded_key_patterns)
+
+        # ---- Phase A: Config scanning ----
         flat_props = self._load_yaml_flat_props(root)
         for key, value in flat_props.items():
             if not url_key_pattern.search(key):
                 continue
 
+            if _is_excluded_key(key) or _is_excluded_url(key):
+                continue
+
             # Resolve Spring EL expressions like ${ENV_VAR:https://default-url}
             resolved_value = value
-            if value.startswith("${"):
+            raw_has_spring_el = value.startswith("${")
+            if raw_has_spring_el:
                 resolved_value = self._resolve_spring_el_topic(value)
 
-            if not resolved_value.startswith(("http://", "https://")):
-                continue
-
-            if _is_excluded_url(resolved_value) or _is_excluded_url(key):
-                continue
-
-            if key not in seen_keys:
-                seen_keys.add(key)
-                calls.append(
-                    OutboundCall(
-                        target_url=resolved_value,
-                        config_key=key,
-                        protocol="http",
+            if resolved_value.startswith(("http://", "https://")):
+                if _is_excluded_url(resolved_value):
+                    continue
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    calls.append(
+                        OutboundCall(
+                            target_url=resolved_value,
+                            config_key=key,
+                            protocol="http",
+                        )
                     )
-                )
+            elif raw_has_spring_el and not _is_excluded_url(resolved_value):
+                # Change 1: env-var-only Spring EL value (e.g., "${NBA_BASE_URL:}"
+                # resolves to "" or env var name).  Still emit the outbound call
+                # with an env: prefixed target so the graph captures connectivity.
+                env_var_name = self._extract_env_var_from_spring_el(value)
+                if env_var_name and key not in seen_keys:
+                    seen_keys.add(key)
+                    calls.append(
+                        OutboundCall(
+                            target_url=f"env:{env_var_name}",
+                            config_key=key,
+                            protocol="http",
+                        )
+                    )
 
-        # Phase B: scan Java source for WebClient.builder().baseUrl() and
-        # HttpServiceProxyFactory + @HttpExchange declarative client patterns.
-        # Detect Spring 6 declarative HTTP client base URL injection.
-        # Pattern: WebClient.builder().baseUrl(someVar) where someVar comes from @Value.
-        # Also detect env-var or @Value references passed directly to baseUrl().
+        # ---- Phase B: Java source scanning ----
         http_exchange_baseurl_pattern = re.compile(
             r"""\.baseUrl\s*\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*\)""",
+        )
+
+        # Change 2: Pattern for @Value on method parameters in @Bean methods.
+        # Matches: @Value("${config.key}") String paramName
+        # in method signatures (not just field declarations).
+        bean_method_value_pattern = re.compile(
+            r'@Value\s*\(\s*["\'](\$\{[^}]+\})["\']'
+            r'\s*\)\s*String\s+(\w+)',
         )
 
         for java_file in root.rglob("*.java"):
@@ -1555,6 +1606,7 @@ class BackendJavaExtractor(Extractor):
             if "WebClient" not in content and "HttpServiceProxyFactory" not in content:
                 continue
 
+            # ---- Phase B.1: .baseUrl() detection (existing logic) ----
             for m in http_exchange_baseurl_pattern.finditer(content):
                 raw = m.group(1).strip().strip('"').strip("'")
                 if raw.startswith("${"):
@@ -1627,7 +1679,352 @@ class BackendJavaExtractor(Extractor):
                                     )
                                 )
 
+            # ---- Phase B.2: @Value on method parameters (Change 2) ----
+            # Detect @Value("${config.key}") String paramName on @Bean method
+            # parameters, resolving the config key via YAML flat props.
+            for vm in bean_method_value_pattern.finditer(content):
+                el_expr = vm.group(1)  # e.g., "${nba.default.base-uri}"
+                inner = re.fullmatch(r"\$\{([^}]+)\}", el_expr)
+                if not inner:
+                    continue
+                prop_key = inner.group(1).split(":")[0]
+                is_excluded = (
+                    prop_key in seen_keys
+                    or _is_excluded_key(prop_key)
+                    or _is_excluded_url(prop_key)
+                )
+                if is_excluded:
+                    continue
+                if not url_key_pattern.search(prop_key):
+                    continue
+
+                # Try to resolve the config key to a URL
+                yaml_value = flat_props.get(prop_key)
+                target_url: str | None = None
+                if yaml_value:
+                    is_el = yaml_value.startswith("${")
+                    resolved = (
+                        self._resolve_spring_el_topic(yaml_value)
+                        if is_el else yaml_value
+                    )
+                    is_http = resolved.startswith(("http://", "https://"))
+                    if is_http and not _is_excluded_url(resolved):
+                        target_url = resolved
+                    else:
+                        # Env-var-only value — use env: prefix
+                        env_var = (
+                            self._extract_env_var_from_spring_el(yaml_value)
+                            if is_el else None
+                        )
+                        if env_var:
+                            target_url = f"env:{env_var}"
+
+                # Also check for inline default in @Value expression
+                if target_url is None:
+                    inner_val = inner.group(1)
+                    default_val = (
+                        inner_val.split(":", 1)[1]
+                        if ":" in inner_val else None
+                    )
+                    is_http_default = (
+                        default_val
+                        and default_val.startswith(("http://", "https://"))
+                        and not _is_excluded_url(default_val)
+                    )
+                    if is_http_default:
+                        target_url = default_val
+                    elif not default_val:
+                        # No YAML value, no inline default
+                        env_var = (
+                            self._extract_env_var_from_spring_el(yaml_value)
+                            if yaml_value and yaml_value.startswith("${")
+                            else None
+                        )
+                        if env_var:
+                            target_url = f"env:{env_var}"
+
+                if target_url and not _is_excluded_url(target_url):
+                    seen_keys.add(prop_key)
+                    calls.append(
+                        OutboundCall(
+                            target_url=target_url,
+                            config_key=prop_key,
+                            protocol="http",
+                        )
+                    )
+
+        # ---- Phase C: @HttpExchange interface scanning (Change 3) ----
+        # Build a map of config_key → OutboundCall index for enrichment
+        call_by_config_key = {c.config_key: c for c in calls if c.config_key}
+
+        # Scan for @HttpExchange interfaces and their instantiation sites
+        interface_metadata = self._scan_http_exchange_interfaces(root)
+        bean_to_config_key = self._scan_http_exchange_bean_config_keys(root)
+
+        for iface_name, endpoints in interface_metadata.items():
+            # Find which config key this interface is bound to via bean registration
+            config_key = bean_to_config_key.get(iface_name)
+            if config_key and config_key in call_by_config_key:
+                call = call_by_config_key[config_key]
+                if iface_name not in call.client_interfaces:
+                    call.client_interfaces.append(iface_name)
+                for ep in endpoints:
+                    # Avoid duplicates
+                    if not any(e.method == ep.method and e.path == ep.path for e in call.endpoints):
+                        call.endpoints.append(ep)
+
         return calls
+
+    def _extract_env_var_from_spring_el(self, value: str) -> str | None:
+        """Extract the environment variable name from a Spring EL expression.
+
+        Examples:
+            "${NBA_BASE_URL:}"  → "NBA_BASE_URL"
+            "${NBA_BASE_URL}"   → "NBA_BASE_URL"
+            "${some.prop:default}" → "some.prop" (not an env var, but the prop key)
+            "plain-value"       → None
+        """
+        m = re.fullmatch(r"\$\{([^}]+)\}", value.strip())
+        if not m:
+            return None
+        inner = m.group(1)
+        # Split on ":" to get the var name (before the default)
+        var_name = inner.split(":")[0]
+        return var_name if var_name else None
+
+    def _scan_http_exchange_interfaces(self, root: Path) -> dict[str, list[EndpointIndex]]:
+        """Scan for @HttpExchange-annotated interfaces and extract their endpoint paths.
+
+        Returns a dict mapping interface name → list of EndpointIndex objects
+        representing the @GetExchange, @PostExchange, etc. methods.
+        """
+        interfaces: dict[str, list[EndpointIndex]] = {}
+
+        exchange_method_pattern = re.compile(
+            r"@(Get|Post|Put|Delete|Patch)Exchange\b"
+        )
+        exchange_path_pattern = re.compile(
+            r'@(?:Get|Post|Put|Delete|Patch)Exchange\s*\(\s*(?:url\s*=\s*)?["\']([^"\']+)["\']',
+        )
+        # Class-level @HttpExchange("base-path")
+        class_exchange_path_pattern = re.compile(
+            r'@HttpExchange\s*\(\s*(?:url\s*=\s*)?["\']([^"\']+)["\']',
+        )
+
+        for java_file in root.rglob("*.java"):
+            parts = java_file.parts
+            if any(part in _EXCLUDED_DIRS for part in parts):
+                continue
+            if any(part in _TEST_DIR_SEGMENTS for part in parts):
+                continue
+            try:
+                content = java_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            if "@HttpExchange" not in content:
+                continue
+
+            # Check this is an interface (not a class)
+            iface_m = re.search(
+                r"(?:public\s+)?interface\s+(\w+)", content, re.MULTILINE
+            )
+            if not iface_m:
+                continue
+
+            iface_name = iface_m.group(1)
+
+            # Check for class-level base path
+            class_base_path: str | None = None
+            class_path_m = class_exchange_path_pattern.search(content)
+            if class_path_m:
+                class_base_path = class_path_m.group(1)
+
+            endpoints: list[EndpointIndex] = []
+            for method_m in exchange_method_pattern.finditer(content):
+                http_verb = method_m.group(1).upper()
+
+                # Extract the path from the annotation
+                # Look at the full annotation starting from this match position
+                annotation_start = method_m.start()
+                path_m = exchange_path_pattern.search(content, annotation_start)
+                method_path: str | None = None
+                if path_m and path_m.start() == annotation_start:
+                    method_path = path_m.group(1)
+
+                # Combine class-level + method-level paths
+                full_path = self._combine_paths(class_base_path, method_path)
+
+                endpoints.append(
+                    EndpointIndex(
+                        method=http_verb,
+                        path=full_path,
+                    )
+                )
+
+            if endpoints:
+                interfaces[iface_name] = endpoints
+
+        return interfaces
+
+    def _scan_http_exchange_bean_config_keys(self, root: Path) -> dict[str, str]:
+        """Scan @Configuration classes for @HttpExchange client bean registrations.
+
+        Detects two patterns:
+        1. Direct: HttpServiceProxyFactory.createClient(XxxClient.class) in a @Bean method
+        2. Delegated: createWebClient(url, XxxClient.class) where createWebClient is a
+           private helper that internally calls factory.createClient(clientType)
+
+        In both cases, the @Value annotation on the enclosing @Bean method parameter
+        provides the config key.
+
+        Returns a dict mapping interface name → config key.
+        """
+        result: dict[str, str] = {}
+
+        # Pattern: createClient(XxxClient.class) or .createClient(XxxClient.class)
+        create_client_pattern = re.compile(
+            r"(?:createClient|build\(\)\.createClient)\s*\(\s*(\w+)\.class\s*\)"
+        )
+        # Pattern: delegated helper call like createWebClient(url, XxxClient.class)
+        # or any method call ending with (someVar, XxxClient.class)
+        delegated_client_pattern = re.compile(
+            r"\bcreate\w*\s*\(\s*\w+\s*,\s*(\w+)\.class\s*\)"
+        )
+        # Pattern for @Value on method parameters
+        value_param_pattern = re.compile(
+            r'@Value\s*\(\s*["\'](\$\{[^}]+\})["\']'
+            r'\s*\)\s*String\s+(\w+)',
+        )
+
+        for java_file in root.rglob("*.java"):
+            parts = java_file.parts
+            if any(part in _EXCLUDED_DIRS for part in parts):
+                continue
+            if any(part in _TEST_DIR_SEGMENTS for part in parts):
+                continue
+            try:
+                content = java_file.read_text(errors="replace")
+            except OSError:
+                continue
+
+            if "HttpServiceProxyFactory" not in content and "createClient" not in content:
+                continue
+
+            # Find all client references — both direct and delegated patterns
+            client_refs: dict[str, int] = {}  # iface_name → position
+            for cm in create_client_pattern.finditer(content):
+                client_refs[cm.group(1)] = cm.start()
+            for cm in delegated_client_pattern.finditer(content):
+                iface_name = cm.group(1)
+                if iface_name not in client_refs:
+                    client_refs[iface_name] = cm.start()
+
+            if not client_refs:
+                continue
+
+            # For each client ref, find the enclosing method and its @Value parameter
+            # Strategy: look backwards from createClient() to find the method signature
+            # with @Value parameter
+            for iface_name, pos in client_refs.items():
+                self._link_client_to_config_key(
+                    content, iface_name, pos, result
+                )
+
+            # Also handle the case where @Value params are not directly linkable
+            # to a specific createClient call — use proximity matching
+            if not result:
+                # Collect all @Value params and createClient calls
+                value_params = list(value_param_pattern.finditer(content))
+                if value_params and client_refs:
+                    self._link_by_method_boundaries(
+                        content, value_params, client_refs, result
+                    )
+
+        return result
+
+    def _link_client_to_config_key(
+        self,
+        content: str,
+        iface_name: str,
+        create_client_pos: int,
+        result: dict[str, str],
+    ) -> None:
+        """Link a createClient(XxxClient.class) call to its @Value config key.
+
+        Searches backwards from the createClient position to find the enclosing
+        method's @Value parameter annotation.
+        """
+        url_key_re = _URL_KEY_PATTERN
+
+        # Look backwards for the nearest @Value("${...}") String param
+        # within a reasonable distance (up to the previous @Bean or start)
+        search_start = max(0, create_client_pos - 1500)
+        window = content[search_start:create_client_pos]
+
+        value_param_re = re.compile(
+            r'@Value\s*\(\s*["\'](\$\{([^}]+)\})["\']'
+            r'\s*\)\s*String\s+\w+',
+        )
+        # Find the LAST @Value match in the window (closest to createClient)
+        last_match = None
+        for m in value_param_re.finditer(window):
+            last_match = m
+
+        if last_match:
+            inner = last_match.group(2)
+            prop_key = inner.split(":")[0]
+            if url_key_re.search(prop_key):
+                result[iface_name] = prop_key
+
+    def _link_by_method_boundaries(
+        self,
+        content: str,
+        value_params: list,
+        client_refs: dict[str, int],
+        result: dict[str, str],
+    ) -> None:
+        """Link @Value params to createClient calls using method boundaries.
+
+        Groups @Value annotations and createClient calls by their enclosing
+        method (delimited by @Bean annotations), then maps them.
+        """
+        url_key_re = _URL_KEY_PATTERN
+
+        # Find all @Bean positions to establish method boundaries
+        bean_positions = [m.start() for m in re.finditer(r"@Bean\b", content)]
+        if not bean_positions:
+            return
+
+        # Add sentinel at end
+        bean_positions.append(len(content))
+
+        for i in range(len(bean_positions) - 1):
+            method_start = bean_positions[i]
+            method_end = bean_positions[i + 1]
+
+            # Find @Value params in this method
+            method_values = [
+                vp for vp in value_params
+                if method_start <= vp.start() < method_end
+            ]
+            # Find createClient calls in this method
+            method_clients = [
+                (name, pos) for name, pos in client_refs.items()
+                if method_start <= pos < method_end
+            ]
+
+            if method_values and method_clients:
+                # Take the first URL-like @Value and first client
+                for vp in method_values:
+                    inner = re.fullmatch(r"\$\{([^}]+)\}", vp.group(1))
+                    if inner:
+                        prop_key = inner.group(1).split(":")[0]
+                        if url_key_re.search(prop_key):
+                            for client_name, _ in method_clients:
+                                if client_name not in result:
+                                    result[client_name] = prop_key
+                            break
 
     def _parse_database_info(self, root: Path) -> tuple[str | None, list[str], int | None]:
         """Detect primary/secondary databases and count Flyway migrations.

@@ -249,10 +249,33 @@
       "items": {
         "type": "object",
         "properties": {
-          "target_url": { "type": "string", "description": "Raw base URL from config" },
+          "target_url": { "type": "string", "description": "Raw base URL from config (or env:VAR_NAME for unresolved env vars)" },
           "target_service": { "type": "string", "description": "Resolved service name" },
           "config_key": { "type": "string", "description": "Config property key" },
-          "protocol": { "type": "string", "default": "http" }
+          "protocol": { "type": "string", "default": "http" },
+          "client_interfaces": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Names of @HttpExchange client interfaces that use this base URL"
+          },
+          "endpoints": {
+            "type": "array",
+            "description": "Endpoint paths declared on @HttpExchange client interfaces",
+            "items": {
+              "type": "object",
+              "properties": {
+                "method": { "type": "string" },
+                "path": { "type": "string" },
+                "summary": { "type": "string" },
+                "tags": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "operation_id": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
         },
         "additionalProperties": false
       }

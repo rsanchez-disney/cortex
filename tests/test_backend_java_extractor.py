@@ -1978,10 +1978,10 @@ class TestOutboundCallUrlResolution:
         assert "my-service.base-url" in call_map
         assert call_map["my-service.base-url"].target_url == "https://api.my-service.example.com/v2"
 
-    def test_spring_el_without_default_url_not_included(
+    def test_spring_el_without_default_url_emits_env_prefix(
         self, extractor: BackendJavaExtractor, tmp_path: Path
     ) -> None:
-        """${ENV_VAR} with no default and not resolvable should not create an outbound call."""
+        """${ENV_VAR} with no default emits an outbound call with env: prefix target_url."""
         resources = tmp_path / "src" / "main" / "resources"
         resources.mkdir(parents=True)
         (resources / "application.yml").write_text(
@@ -1990,9 +1990,10 @@ class TestOutboundCallUrlResolution:
         )
 
         calls = extractor._parse_outbound_service_calls(tmp_path)
-        # Should not appear because the value resolves to env var name, not http://
         call_map = {c.config_key: c for c in calls}
-        assert "internal.base-url" not in call_map
+        # Change 1: env-var-only values now emit outbound calls with env: prefix
+        assert "internal.base-url" in call_map
+        assert call_map["internal.base-url"].target_url == "env:INTERNAL_SERVICE_URL"
 
 
 # ---------------------------------------------------------------------------
@@ -2169,3 +2170,433 @@ class TestYamlValueIsSpringElResolution:
         assert "ordersTopic" in fields
         assert fields["ordersTopic"] == "orders-created"
         assert not fields["ordersTopic"].startswith("${")
+
+
+# ---------------------------------------------------------------------------
+# TestEnvVarOnlyOutboundCalls — Change 1
+# ---------------------------------------------------------------------------
+
+
+class TestEnvVarOnlyOutboundCalls:
+    """Tests for Change 1: env-var-only YAML config keys emit outbound calls."""
+
+    def test_env_var_with_empty_default_emits_call(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """${ENV_VAR:} (empty default) emits outbound call with env: prefix."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "notifications:\n  base-uri: ${NOTIFICATIONS_SERVICE_BASE_URI:}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+        assert "notifications.base-uri" in call_map
+        assert call_map["notifications.base-uri"].target_url == "env:NOTIFICATIONS_SERVICE_BASE_URI"
+
+    def test_env_var_without_default_emits_call(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """${ENV_VAR} (no default at all) emits outbound call with env: prefix."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "partner-api:\n  base-url: ${PARTNER_API_BASE_URL}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+        assert "partner-api.base-url" in call_map
+        assert call_map["partner-api.base-url"].target_url == "env:PARTNER_API_BASE_URL"
+
+    def test_env_var_with_http_default_still_resolves_normally(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """${ENV_VAR:https://default-url} still resolves to the HTTP URL (no env: prefix)."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "my-service:\n  base-url: ${MY_SVC_URL:https://api.example.com}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+        assert "my-service.base-url" in call_map
+        assert call_map["my-service.base-url"].target_url == "https://api.example.com"
+
+    def test_env_var_infra_keys_excluded(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Infrastructure keys (redis, cosmos, etc.) are still excluded even with env: prefix."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n"
+            "  data:\n"
+            "    redis:\n"
+            "      url: ${REDIS_URL}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        # Redis URLs should still be excluded
+        call_keys = {c.config_key for c in calls}
+        assert "spring.data.redis.url" not in call_keys
+
+    def test_multiple_env_var_services_detected(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Multiple env-var-only service URLs are all detected."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "nba:\n"
+            "  default:\n"
+            "    base-uri: ${NBA_BASE_URL:}\n"
+            "ticketing:\n"
+            "  base-uri: ${TICKETING_SERVICE_BASE_URI:}\n"
+            "notifications:\n"
+            "  base-uri: ${NOTIFICATIONS_SERVICE_BASE_URI:}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_keys = {c.config_key for c in calls}
+        assert "nba.default.base-uri" in call_keys
+        assert "ticketing.base-uri" in call_keys
+        assert "notifications.base-uri" in call_keys
+        # All should have env: prefix
+        for c in calls:
+            assert c.target_url.startswith("env:"), f"Expected env: prefix on {c.config_key}"
+
+    def test_fixture_detects_env_var_outbound_calls(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """Fixture application.yml env-var-only entries are detected as outbound calls."""
+        calls = extractor._parse_outbound_service_calls(SAMPLE_BACKEND_JAVA_REPO)
+        call_map = {c.config_key: c for c in calls}
+        # Fixture has notifications.base-uri: ${NOTIFICATIONS_SERVICE_BASE_URI:}
+        assert "notifications.base-uri" in call_map
+        assert call_map["notifications.base-uri"].target_url == "env:NOTIFICATIONS_SERVICE_BASE_URI"
+        # Fixture has ticketing.base-uri: ${TICKETING_SERVICE_BASE_URI:}
+        assert "ticketing.base-uri" in call_map
+        assert call_map["ticketing.base-uri"].target_url == "env:TICKETING_SERVICE_BASE_URI"
+        # Fixture has partner-api.base-url: ${PARTNER_API_BASE_URL}
+        assert "partner-api.base-url" in call_map
+        assert call_map["partner-api.base-url"].target_url == "env:PARTNER_API_BASE_URL"
+
+    def test_extract_env_var_from_spring_el(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """_extract_env_var_from_spring_el extracts env var names correctly."""
+        assert extractor._extract_env_var_from_spring_el("${NBA_BASE_URL:}") == "NBA_BASE_URL"
+        assert extractor._extract_env_var_from_spring_el("${NBA_BASE_URL}") == "NBA_BASE_URL"
+        assert extractor._extract_env_var_from_spring_el("${MY_VAR:default}") == "MY_VAR"
+        assert extractor._extract_env_var_from_spring_el("plain-value") is None
+        assert extractor._extract_env_var_from_spring_el("https://example.com") is None
+
+
+# ---------------------------------------------------------------------------
+# TestValueOnMethodParams — Change 2
+# ---------------------------------------------------------------------------
+
+
+class TestValueOnMethodParams:
+    """Tests for Change 2: @Value on @Bean method parameters for outbound call detection."""
+
+    def test_value_on_method_param_detected(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Value on @Bean method param creates outbound call when YAML has env-var value."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "nba:\n  default:\n    base-uri: ${NBA_BASE_URL:}\n"
+        )
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "WebClientConfig.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.web.reactive.function.client.WebClient;\n"
+            "import org.springframework.web.service.invoker.HttpServiceProxyFactory;\n"
+            "public class WebClientConfig {\n"
+            "    @Bean\n"
+            "    public NBAWebClient nbaWebClient(\n"
+            '            @Value("${nba.default.base-uri}") String url) {\n'
+            "        return createWebClient(url, NBAWebClient.class);\n"
+            "    }\n"
+            "    private <T> T createWebClient(String url, Class<T> clientType) {\n"
+            "        WebClient webClient = WebClient.builder().baseUrl(url).build();\n"
+            "        HttpServiceProxyFactory factory = HttpServiceProxyFactory.builder()\n"
+            "                .build();\n"
+            "        return factory.createClient(clientType);\n"
+            "    }\n"
+            "}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+        assert "nba.default.base-uri" in call_map
+        assert call_map["nba.default.base-uri"].target_url == "env:NBA_BASE_URL"
+
+    def test_value_on_method_param_with_http_default(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Value on method param resolves to HTTP URL when YAML has http default."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "my-api:\n  base-url: ${MY_API_URL:https://api.example.com}\n"
+        )
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "ClientConfig.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.web.reactive.function.client.WebClient;\n"
+            "import org.springframework.web.service.invoker.HttpServiceProxyFactory;\n"
+            "public class ClientConfig {\n"
+            "    @Bean\n"
+            "    public MyApiClient myApiClient(\n"
+            '            @Value("${my-api.base-url}") String url) {\n'
+            "        WebClient webClient = WebClient.builder().baseUrl(url).build();\n"
+            "        return null;\n"
+            "    }\n"
+            "}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+        assert "my-api.base-url" in call_map
+        assert call_map["my-api.base-url"].target_url == "https://api.example.com"
+
+    def test_value_on_method_param_non_url_key_ignored(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Value on method param with non-URL config key is not treated as outbound call."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "Config.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.web.reactive.function.client.WebClient;\n"
+            "public class Config {\n"
+            "    @Bean\n"
+            "    public String timeout(\n"
+            '            @Value("${services.timeout-ms}") String timeoutMs) {\n'
+            "        return timeoutMs;\n"
+            "    }\n"
+            "}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        assert len(calls) == 0
+
+    def test_fixture_detects_method_param_value_outbound_calls(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """Fixture WebClientConfig with @Value method params produces outbound calls."""
+        calls = extractor._parse_outbound_service_calls(SAMPLE_BACKEND_JAVA_REPO)
+        call_map = {c.config_key: c for c in calls}
+        # Fixture WebClientConfig.java has @Value("${notifications.base-uri}") on method param
+        assert "notifications.base-uri" in call_map
+        # Fixture WebClientConfig.java has @Value("${ticketing.base-uri}") on method param
+        assert "ticketing.base-uri" in call_map
+
+
+# ---------------------------------------------------------------------------
+# TestHttpExchangeInterfaceScanning — Change 3
+# ---------------------------------------------------------------------------
+
+
+class TestHttpExchangeInterfaceScanning:
+    """Tests for Change 3: @HttpExchange interface scanning for endpoint metadata."""
+
+    def test_http_exchange_interface_endpoints_extracted(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@HttpExchange interface methods are extracted as endpoint metadata."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "ExternalApiClient.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.service.annotation.HttpExchange;\n"
+            "import org.springframework.web.service.annotation.GetExchange;\n"
+            "import org.springframework.web.service.annotation.PostExchange;\n"
+            "@HttpExchange\n"
+            "public interface ExternalApiClient {\n"
+            '    @GetExchange(url = "/v1/items")\n'
+            "    Object listItems();\n"
+            '    @PostExchange(url = "/v1/items")\n'
+            "    Object createItem(Object body);\n"
+            "}\n"
+        )
+        interfaces = extractor._scan_http_exchange_interfaces(tmp_path)
+        assert "ExternalApiClient" in interfaces
+        eps = interfaces["ExternalApiClient"]
+        assert len(eps) == 2
+        methods = {ep.method for ep in eps}
+        assert "GET" in methods
+        assert "POST" in methods
+        paths = {ep.path for ep in eps}
+        assert "/v1/items" in paths
+
+    def test_http_exchange_with_class_level_base_path(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Class-level @HttpExchange('/api') is combined with method paths."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "MyClient.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.service.annotation.HttpExchange;\n"
+            "import org.springframework.web.service.annotation.GetExchange;\n"
+            '@HttpExchange("/api")\n'
+            "public interface MyClient {\n"
+            '    @GetExchange(url = "/users")\n'
+            "    Object listUsers();\n"
+            "}\n"
+        )
+        interfaces = extractor._scan_http_exchange_interfaces(tmp_path)
+        assert "MyClient" in interfaces
+        eps = interfaces["MyClient"]
+        assert len(eps) == 1
+        assert eps[0].path == "/api/users"
+        assert eps[0].method == "GET"
+
+    def test_http_exchange_interface_linked_to_outbound_call(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@HttpExchange interfaces are linked to outbound calls via createClient binding."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "external:\n  base-url: ${EXTERNAL_API_URL:}\n"
+        )
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        # @HttpExchange interface
+        (src / "ExternalClient.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.service.annotation.HttpExchange;\n"
+            "import org.springframework.web.service.annotation.GetExchange;\n"
+            "@HttpExchange\n"
+            "public interface ExternalClient {\n"
+            '    @GetExchange(url = "/v1/data")\n'
+            "    Object getData();\n"
+            "}\n"
+        )
+
+        # Config class that binds the interface to a base URL
+        (src / "WebConfig.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.web.reactive.function.client.WebClient;\n"
+            "import org.springframework.web.service.invoker.HttpServiceProxyFactory;\n"
+            "public class WebConfig {\n"
+            "    @Bean\n"
+            "    public ExternalClient externalClient(\n"
+            '            @Value("${external.base-url}") String url) {\n'
+            "        WebClient webClient = WebClient.builder().baseUrl(url).build();\n"
+            "        HttpServiceProxyFactory factory = HttpServiceProxyFactory.builder()\n"
+            "                .build();\n"
+            "        return factory.createClient(ExternalClient.class);\n"
+            "    }\n"
+            "}\n"
+        )
+
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        call_map = {c.config_key: c for c in calls}
+        assert "external.base-url" in call_map
+        call = call_map["external.base-url"]
+        assert "ExternalClient" in call.client_interfaces
+        assert len(call.endpoints) == 1
+        assert call.endpoints[0].method == "GET"
+        assert call.endpoints[0].path == "/v1/data"
+
+    def test_fixture_http_exchange_interfaces_linked(
+        self, extractor: BackendJavaExtractor
+    ) -> None:
+        """Fixture @HttpExchange interfaces are linked to their outbound calls."""
+        calls = extractor._parse_outbound_service_calls(SAMPLE_BACKEND_JAVA_REPO)
+        call_map = {c.config_key: c for c in calls}
+
+        # NotificationsWebClient should be linked to notifications.base-uri
+        if "notifications.base-uri" in call_map:
+            notif_call = call_map["notifications.base-uri"]
+            assert "NotificationsWebClient" in notif_call.client_interfaces
+            assert len(notif_call.endpoints) >= 2  # sendNotification + getNotificationStatus
+
+        # TicketingWebClient should be linked to ticketing.base-uri
+        if "ticketing.base-uri" in call_map:
+            tick_call = call_map["ticketing.base-uri"]
+            assert "TicketingWebClient" in tick_call.client_interfaces
+            assert len(tick_call.endpoints) >= 3  # listTickets + purchaseTicket + getTicket
+
+    def test_non_interface_files_ignored(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Java classes (not interfaces) with @HttpExchange are ignored."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "NotAnInterface.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.service.annotation.HttpExchange;\n"
+            "import org.springframework.web.service.annotation.GetExchange;\n"
+            "@HttpExchange\n"
+            "public class NotAnInterface {\n"
+            '    @GetExchange(url = "/should/not/appear")\n'
+            "    public Object method() { return null; }\n"
+            "}\n"
+        )
+        interfaces = extractor._scan_http_exchange_interfaces(tmp_path)
+        assert "NotAnInterface" not in interfaces
+
+    def test_scan_http_exchange_bean_config_keys(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """_scan_http_exchange_bean_config_keys maps interface name → config key."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "ClientConfig.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.web.service.invoker.HttpServiceProxyFactory;\n"
+            "public class ClientConfig {\n"
+            "    @Bean\n"
+            "    public MyClient myClient(\n"
+            '            @Value("${my-service.base-url}") String url) {\n'
+            "        return factory.createClient(MyClient.class);\n"
+            "    }\n"
+            "    @Bean\n"
+            "    public OtherClient otherClient(\n"
+            '            @Value("${other-service.base-uri}") String url) {\n'
+            "        return factory.createClient(OtherClient.class);\n"
+            "    }\n"
+            "}\n"
+        )
+        result = extractor._scan_http_exchange_bean_config_keys(tmp_path)
+        assert result.get("MyClient") == "my-service.base-url"
+        assert result.get("OtherClient") == "other-service.base-uri"
+
+    def test_all_exchange_methods_detected(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """All HTTP exchange methods are detected: GET, POST, PUT, DELETE, PATCH."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "FullClient.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.service.annotation.*;\n"
+            "@HttpExchange\n"
+            "public interface FullClient {\n"
+            '    @GetExchange(url = "/items")\n'
+            "    Object list();\n"
+            '    @PostExchange(url = "/items")\n'
+            "    Object create(Object body);\n"
+            '    @PutExchange(url = "/items/{id}")\n'
+            "    Object update(String id, Object body);\n"
+            '    @DeleteExchange(url = "/items/{id}")\n'
+            "    Object delete(String id);\n"
+            '    @PatchExchange(url = "/items/{id}")\n'
+            "    Object patch(String id, Object body);\n"
+            "}\n"
+        )
+        interfaces = extractor._scan_http_exchange_interfaces(tmp_path)
+        assert "FullClient" in interfaces
+        eps = interfaces["FullClient"]
+        methods = {ep.method for ep in eps}
+        assert methods == {"GET", "POST", "PUT", "DELETE", "PATCH"}

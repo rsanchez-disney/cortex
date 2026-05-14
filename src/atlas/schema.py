@@ -255,6 +255,20 @@ class OutboundCall(BaseModel):
     target_service: str | None = None  # resolved service name (set during aggregation)
     config_key: str | None = None  # the config property key (e.g., "services.identity.base-url")
     protocol: str = "http"
+    client_interfaces: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of @HttpExchange client interfaces that use this base URL "
+            "(e.g., ['NBAWebClient', 'NBAStatsWebClient'])"
+        ),
+    )
+    endpoints: list[EndpointIndex] = Field(
+        default_factory=list,
+        description=(
+            "Endpoint paths declared on @HttpExchange client interfaces "
+            "(e.g., @GetExchange('/v0/api/scores'))"
+        ),
+    )
 
 
 class ApiCall(BaseModel):

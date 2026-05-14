@@ -33,5 +33,15 @@ services:
   rewards:
     base-url: https://rewards-service.internal
 
+# Outbound service integrations with env-var-only URLs (Change 1 test)
+notifications:
+  base-uri: ${NOTIFICATIONS_SERVICE_BASE_URI:}
+
+ticketing:
+  base-uri: ${TICKETING_SERVICE_BASE_URI:}
+
+partner-api:
+  base-url: ${PARTNER_API_BASE_URL}
+
 server:
   port: 8080
