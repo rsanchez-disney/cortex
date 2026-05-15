@@ -235,7 +235,6 @@ class GraphEntry(BaseModel):
     purpose: str
     keywords: list[str] = Field(default_factory=list)
     language: str | None = None
-    dependencies: list[str] = Field(default_factory=list)
     endpoints: list[EndpointIndex] = Field(default_factory=list)
 
     # Enriched fields for graph-level querying

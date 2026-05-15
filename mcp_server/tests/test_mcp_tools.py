@@ -89,7 +89,6 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
                 "purpose": "Sample Android banking app for mobile payments",
                 "keywords": ["android", "banking", "mobile", "payments"],
                 "language": "kotlin",
-                "dependencies": ["retrofit", "sample-ios"],
                 "endpoints": [],
                 "kafka_produces": [],
                 "kafka_consumes": ["orders.created"],
@@ -104,7 +103,6 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
                 "purpose": "Sample iOS banking app with biometric authentication",
                 "keywords": ["ios", "banking", "mobile", "biometric"],
                 "language": "swift",
-                "dependencies": ["Alamofire"],
                 "endpoints": [],
                 "kafka_produces": ["orders.created"],
                 "kafka_consumes": [],
@@ -289,22 +287,6 @@ class TestGetServiceContext:
             _call_tool(mcp_server, "get_service_context", {"name": "nonexistent"})
         )
         assert "error" in result
-
-    def test_dependents_computed(self, mcp_server: AtlasMCPServer) -> None:
-        """Direct dependents are computed from graph."""
-        result = asyncio.get_event_loop().run_until_complete(
-            _call_tool(
-                mcp_server,
-                "get_service_context",
-                {
-                    "name": "sample-ios",
-                    "include": ["deps"],
-                },
-            )
-        )
-        # sample-android depends on sample-ios
-        assert "sample-android" in result.get("direct_dependents", [])
-
 
 class TestGetEndpointContract:
     """Tests for get_endpoint_contract tool."""

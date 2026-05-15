@@ -346,10 +346,8 @@ class AtlasMCPServer:
                         d["name"] for d in manifest.get("dependencies", [])
                     ]
                 else:
-                    context["direct_dependencies"] = svc.get("dependencies", [])
-
-                # Compute dependents from graph
-                context["direct_dependents"] = _find_dependents(graph, name)
+                    # Manifest not cached; dependency data is unavailable until re-extraction.
+                    context["direct_dependencies"] = None
 
             if "contracts" in include:
                 if manifest:
@@ -691,10 +689,4 @@ def _find_service(graph: dict, name: str) -> dict | None:
     return None
 
 
-def _find_dependents(graph: dict, name: str) -> list[str]:
-    """Find services that depend on the given service."""
-    dependents = []
-    for svc in graph.get("services", []):
-        if name in svc.get("dependencies", []):
-            dependents.append(svc["name"])
-    return dependents
+

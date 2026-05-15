@@ -161,9 +161,6 @@ def _manifest_to_graph_entry(manifest: dict) -> GraphEntry:
                 )
             )
 
-    # Extract dependency names only (lightweight)
-    dep_names = [d["name"] for d in manifest.get("dependencies", []) if "name" in d]
-
     # Compute lightweight module count (full module details stay in manifest)
     module_count = len(manifest.get("modules", []))
 
@@ -177,7 +174,6 @@ def _manifest_to_graph_entry(manifest: dict) -> GraphEntry:
         purpose=manifest["purpose"],
         keywords=manifest.get("keywords", []),
         language=manifest.get("language"),
-        dependencies=dep_names,
         endpoints=endpoints,
         module_count=module_count,
         permissions=manifest.get("permissions", []),

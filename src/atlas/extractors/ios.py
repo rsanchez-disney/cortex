@@ -145,6 +145,11 @@ class IOSExtractor(Extractor):
         """Mobile apps typically don't have API contracts."""
         return []
 
+    # Known in-app navigation filename patterns — these files contain path strings that
+    # look like API routes but are SwiftUI/UIKit view navigation destinations.
+    # All names in this set are explicitly skipped in _parse_api_calls.
+    _NAV_ROUTER_FILENAMES = {"NavigationRouter.swift", "AppRouter.swift", "DeepLinkRouter.swift"}
+
     def _parse_api_calls(self, root: Path) -> list[ApiCall]:
         """Scan Swift source files for networking patterns.
 
@@ -152,17 +157,25 @@ class IOSExtractor(Extractor):
         1. Moya TargetType implementations: var path: String { "/v1/foo" }
            + var method: Moya.Method { .get }
         2. Alamofire router enums: enum Router { case getAccount } with path/method
-        3. EndPointProtocol pattern: var relativeURL: String { switch self { ... } }
+        3. EndPointProtocol / EndpointBase pattern: var relativeURL: String { switch self { ... } }
+           paths may or may not start with "/" — both are handled.
            + var method: String { ... URLRequestMethod.get.rawValue ... }
         4. URL path string literals matching /v\\d+/.* in networking files
-        5. Simple string constants in files under Network/, API/, Services/ directories
+        5. Simple string constants in files under Network/, API/, Services/, Endpoint/ directories
 
-        For files with switch-based ``var relativeURL`` and ``var method`` properties,
-        the extractor cross-references per-case paths with per-case methods by matching
-        case names to produce ``ApiCall(method=X, path=Y)``.
+        For files with switch-based ``var relativeURL`` (or ``var path``) and ``var method``
+        properties, the extractor cross-references per-case paths with per-case methods by
+        matching case names to produce ``ApiCall(method=X, path=Y)``.
 
-        Focuses on files in Network/, API/, Services/, DataSource/, Remote/, Endpoint/
-        directories.  Skips .build/, DerivedData/, Pods/ directories.
+        Also handles the EndpointBase pattern where relativeURL values are bare segments
+        without a leading "/" (e.g. ``return "events/checkpoint/" + accessPoint``).
+        These are normalised to "/events/checkpoint/{param}" for consistency.
+
+        Focuses on files in Network/, API/, Services/, DataSource/, Remote/, Endpoint/,
+        EndPoint/ directories.  Skips .build/, DerivedData/, Pods/ directories.
+
+        NavigationRouter.swift files are explicitly excluded — they map in-app route
+        strings that look like URL paths but are NOT backend API calls.
         """
         excluded_dirs = {".build", "DerivedData", "Pods", "Carthage", ".git"}
         network_dir_names = {"network", "api", "services", "datasource", "remote",
@@ -170,19 +183,22 @@ class IOSExtractor(Extractor):
 
         # Pattern: var path: String { return "/..." } or var path: String { "/..." }
         # Also matches var relativeURL: String { ... }
+        # The path literal may or may not start with "/"
         path_prop_pattern = re.compile(
-            r'var\s+(?:path|relativeURL)\s*:\s*String\s*\{[^}]*?(?:return\s+)?["\'](/[^"\']+)["\']',
+            r'var\s+(?:path|relativeURL)\s*:\s*String\s*\{[^}]*?(?:return\s+)?["\']([^"\']+)["\']',
             re.DOTALL,
         )
-        # Pattern: case .getAccount: return "/accounts" (any path starting with /)
-        # Uses /[a-z] to avoid matching filesystem paths like "/Users/..."
+        # Pattern: case .getAccount: return "/accounts" OR return "accounts/..."
+        # Captures bare segment paths as well as /prefixed ones.
+        # Uses a negative lookahead to avoid matching pure variable names (no slashes).
         case_return_pattern = re.compile(
-            r'return\s+["\'](/[a-z][^"\']*)["\']',
+            r'return\s+["\']([a-zA-Z/][^"\']*(?:/[^"\']*)+)["\']',
         )
         # Pattern for detecting method from Moya-style or plain String method property
         # Handles: var method: Moya.Method { .get }
         #      and var method: String { ... "GET" ... }
         #      and var method: String { ... URLRequestMethod.get.rawValue ... }
+        #      and Swift implicit-return switch arms: URLRequestMethod.get.rawValue (no return kw)
         method_prop_pattern = re.compile(
             r'var\s+method\s*:\s*(?:Moya\.)?(?:Method|String)\s*\{[^}]*?'
             r'(?:\.\s*(get|post|put|delete|patch)|["\']([Gg][Ee][Tt]|[Pp][Oo][Ss][Tt]'
@@ -206,14 +222,16 @@ class IOSExtractor(Extractor):
         _case_name_re = re.compile(
             r'case\s+((?:\.\w+(?:\s*,\s*)?)+)\s*:',
         )
-        # Match return value in a case arm: ``return "/path"``
+        # Match return value in a case arm: ``return "/path"`` or ``return "path/segment"``
+        # Requires at least one "/" in the captured group (using + not *) so bare single-word
+        # view names like "Home" or "SettingsView" are not captured as API paths.
         _case_return_path_re = re.compile(
-            r'return\s+["\'](/[^"\']+)["\']',
+            r'(?:return\s+)?["\']([a-zA-Z/][^"\']*(?:/[^"\']*)+)["\']',
         )
         # Match return value in a case arm: ``return URLRequestMethod.get.rawValue``
-        # or ``return "GET"`` or ``return .get``
+        # or ``return "GET"`` or ``return .get`` or implicit ``URLRequestMethod.get.rawValue``
         _case_return_method_re = re.compile(
-            r'return\s+(?:URLRequestMethod\.\s*(\w+)\s*\.rawValue'
+            r'(?:return\s+)?(?:URLRequestMethod\.\s*(\w+)\s*\.rawValue'
             r'|["\']([Gg][Ee][Tt]|[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Aa][Tt][Cc][Hh])["\']'
             r'|\.(\w+))',
             re.IGNORECASE,
@@ -223,13 +241,31 @@ class IOSExtractor(Extractor):
         # real API routes. Rejects paths like /pathToTheInformation or /someCamelCaseThing
         # (single segment, camelCase, no hyphens/underscores — strongly suggests a variable).
         _noise_path_re = re.compile(
-            r'^/[a-z][a-zA-Z0-9]*$'   # /camelCase with no separators or sub-segments
+            r'^/?[a-z][a-zA-Z0-9]*$'   # /camelCase or camelCase with no separators or sub-segments
         )
+
+        def _normalise_path(raw: str) -> str:
+            """Normalise a raw path segment into a canonical API path.
+
+            - Strips Swift string interpolation ``\\(...)`` → ``{param}``
+            - Ensures a leading "/" so all paths are absolute
+            - Strips trailing query strings that are pure variable expressions
+            """
+            # Replace Swift string interpolation with {param}
+            path = re.sub(r'\\\([^)]*\)', '{param}', raw)
+            # Strip trailing "?" + variable-only query string (e.g. "?" + deviceIds)
+            path = re.sub(r'\?$', '', path)
+            # Add leading slash if missing
+            if path and not path.startswith("/"):
+                path = "/" + path
+            return path
 
         def _is_noise_path(p: str) -> bool:
             """Return True if the path looks like a placeholder, not a real API route."""
-            # Single camelCase segment (e.g. /pathToTheInformation)
-            if _noise_path_re.match(p):
+            # Strip leading slash for the noise check
+            check = p.lstrip("/")
+            # Single camelCase segment with no separators → variable name
+            if _noise_path_re.match(check):
                 return True
             # Contains suspicious placeholder words
             lower = p.lower()
@@ -293,6 +329,11 @@ class IOSExtractor(Extractor):
             if any(part in excluded_dirs for part in parts):
                 continue
 
+            # Explicitly skip in-app navigation router files — they contain path strings
+            # that look like API routes but are SwiftUI view navigation destinations.
+            if swift_file.name in self._NAV_ROUTER_FILENAMES:
+                continue
+
             # Focus on network-related files
             is_network_dir = any(part.lower() in network_dir_names for part in parts)
             is_api_file = any(
@@ -307,9 +348,11 @@ class IOSExtractor(Extractor):
             except OSError:
                 continue
 
-            # Relaxed gate: require "var path" or "var relativeURL" and any "/"
+            # Relaxed gate: require "var path" or "var relativeURL" or "EndPointProtocol"
+            # conformance, and a "/" indicating URL segments are present.
             has_url_prop = "var path" in content or "var relativeURL" in content
-            has_path_var = has_url_prop and "/" in content
+            has_endpoint_protocol = "EndPointProtocol" in content or "EndpointBase" in content
+            has_path_var = (has_url_prop or has_endpoint_protocol) and "/" in content
             if not (is_network_dir or is_api_file or has_path_var):
                 continue
 
@@ -329,8 +372,9 @@ class IOSExtractor(Extractor):
                 if path_map:
                     # Cross-reference: join on case name
                     for case_name, raw_path in path_map.items():
-                        path = re.sub(r'\\\([^)]*\)', '{param}', raw_path)
-                        if path not in seen_paths and not _is_noise_path(path):
+                        path = _normalise_path(raw_path)
+                        if (path not in seen_paths
+                                and not _is_noise_path(path)):
                             seen_paths.add(path)
                             method = method_map.get(case_name)
                             api_calls.append(
@@ -341,6 +385,36 @@ class IOSExtractor(Extractor):
                                 )
                             )
                     # Skip the legacy path extraction for this file — already handled
+                    continue
+
+            # --- Switch-only relativeURL (no method switch body matched above) ---
+            # Handle EndPointProtocol files where method uses implicit return (no 'return' kw)
+            if url_body_m and not method_body_m:
+                path_map = _parse_switch_cases(
+                    url_body_m.group(1), _case_return_path_re
+                )
+                # Try to get a single global method from the method property.
+                # Note: _method_body_re already returned None for this file (precondition of
+                # this branch), so there is no switch-based method body to parse here.
+                # Use method_prop_pattern to attempt a non-switch single-method match.
+                method: str | None = None
+                method_m = method_prop_pattern.search(content)
+                if method_m:
+                    raw_method = method_m.group(1) or method_m.group(2) or method_m.group(3)
+                    if raw_method:
+                        method = raw_method.upper()
+                if path_map:
+                    for case_name, raw_path in path_map.items():
+                        path = _normalise_path(raw_path)
+                        if path not in seen_paths and not _is_noise_path(path):
+                            seen_paths.add(path)
+                            api_calls.append(
+                                ApiCall(
+                                    method=method,
+                                    path=path,
+                                    interface_name=interface_name,
+                                )
+                            )
                     continue
 
             # --- Fallback: legacy single-method detection ---
@@ -354,9 +428,8 @@ class IOSExtractor(Extractor):
 
             # Find paths from var path / var relativeURL { ... } pattern
             for m in path_prop_pattern.finditer(content):
-                path = m.group(1)
-                # Treat Swift string interpolation \(...) like a path parameter {param}
-                path = re.sub(r'\\\([^)]*\)', '{param}', path)
+                raw_path = m.group(1)
+                path = _normalise_path(raw_path)
                 if path not in seen_paths and not _is_noise_path(path):
                     seen_paths.add(path)
                     api_calls.append(
@@ -369,9 +442,8 @@ class IOSExtractor(Extractor):
 
             # Find paths from case return statements (router pattern)
             for m in case_return_pattern.finditer(content):
-                path = m.group(1)
-                # Treat Swift string interpolation \(...) like a path parameter {param}
-                path = re.sub(r'\\\([^)]*\)', '{param}', path)
+                raw_path = m.group(1)
+                path = _normalise_path(raw_path)
                 if path not in seen_paths and not _is_noise_path(path):
                     api_calls.append(
                         ApiCall(
@@ -418,11 +490,20 @@ class IOSExtractor(Extractor):
         "aepsdk-core-ios": "analytics",
         "aepsdk-analytics-ios": "analytics",
         "aepsdk-places-ios": "analytics",
+        "aepsdk-userprofile-ios": "analytics",
+        "aepsdk-assurance-ios": "analytics",
+        "aepsdk-edge-ios": "analytics",
+        "aepsdk-edgeidentity-ios": "analytics",
+        "aepsdk-edgeconsent-ios": "analytics",
+        "aepsdk-target-ios": "analytics",
+        "aepsdk-messaging-ios": "analytics",
+        "aepsdk-optimize-ios": "analytics",
         "amplitude-ios": "analytics",
         "mixpanel-swift": "analytics",
         # UI
         "lottie": "ui",
         "lottie-ios": "ui",
+        "lottie-spm": "ui",
         "sdwebimage": "ui",
         "sdwebimageswiftui": "ui",
         "kingfisher": "ui",
@@ -1196,17 +1277,41 @@ class IOSExtractor(Extractor):
                 prefix = child
         return exact or prefix
 
-    def _parse_feature_domains(self, root: Path, target_hint: str | None = None) -> list[str]:
-        """Infer feature domains from Sources/ subdirectory names under any target directory.
+    # Directory names that contain feature domain subdirectories in clean-architecture layouts.
+    # Checked in order: Sources/ is the simple SPM layout; Data/, Domain/, Presentation/
+    # are the Clean Architecture layers commonly used in iOS projects.
+    _FEATURE_DOMAIN_DIRS = ("Sources", "Data", "Domain", "Presentation")
 
-        Looks for Sources/ directories inside known target-like directories (e.g. LaClippers/,
-        LACStaff/) and returns their direct subdirectory names as feature domains.
-        Names with spaces are normalised (spaces replaced with underscores).
-        Generic names that don't represent real features are excluded.
+    # Generic subdirectory names that are infrastructure, not feature domains.
+    _GENERIC_DOMAIN_NAMES = {
+        "Common", "Component", "Data", "UIComponent", "Sources",
+        "Repositories", "Repository", "Extension", "Extensions",
+        "Utilities", "Utility", "Resources", "Resource", "Preview",
+        "PreviewContent", "Mock", "Mocks", "Tests", "UITests",
+        "NewGroup", "C",  # artefacts of Xcode "New Group" renames
+    }
+
+    def _parse_feature_domains(self, root: Path, target_hint: str | None = None) -> list[str]:
+        """Infer feature domains from subdirectory names under any target directory.
+
+        Supports two common iOS project layouts:
+
+        1. **SPM / flat layout** — feature dirs live directly under ``Sources/``:
+           ``LACStaff/Sources/HomeView/``, ``LaClippers/Sources/Payment/``
+
+        2. **Clean Architecture layout** — feature dirs live under one or more
+           architecture layer directories (``Data/``, ``Domain/``, ``Presentation/``):
+           ``LACStaff/Data/HomeView/``, ``LACStaff/Presentation/SalesView/``
+
+        In Clean Architecture repos the same domain name often appears in multiple
+        layers (Data, Domain, Presentation).  The deduplication set ``seen`` ensures
+        each feature domain is only emitted once.
+
+        Names with spaces are normalised (spaces removed).
+        Generic infrastructure names are excluded (see ``_GENERIC_DOMAIN_NAMES``).
 
         When target_hint is provided, only the matching target directory is scanned.
         """
-        generic = {"Common", "Component", "Data", "UIComponent", "Sources"}
         domains: list[str] = []
         seen: set[str] = set()
 
@@ -1219,21 +1324,22 @@ class IOSExtractor(Extractor):
             candidates = [child for child in root.iterdir() if child.is_dir()]
 
         for child in candidates:
-            sources_dir = child / "Sources"
-            if not sources_dir.is_dir():
-                continue
-            for feature_dir in sources_dir.iterdir():
-                if not feature_dir.is_dir():
+            for layer_dir_name in self._FEATURE_DOMAIN_DIRS:
+                layer_dir = child / layer_dir_name
+                if not layer_dir.is_dir():
                     continue
-                # Normalise spaces away; use the no-space variant as canonical key
-                raw = feature_dir.name
-                normalised = raw.replace(" ", "").replace("_", "")
-                if normalised in generic or normalised in seen:
-                    continue
-                seen.add(normalised)
-                # Prefer the name without spaces or underscores if it differs
-                name = raw.replace(" ", "")
-                domains.append(name)
+                for feature_dir in layer_dir.iterdir():
+                    if not feature_dir.is_dir():
+                        continue
+                    # Normalise spaces/underscores for deduplication key
+                    raw = feature_dir.name
+                    normalised = raw.replace(" ", "").replace("_", "")
+                    if normalised in self._GENERIC_DOMAIN_NAMES or normalised in seen:
+                        continue
+                    seen.add(normalised)
+                    # Prefer the name without spaces
+                    name = raw.replace(" ", "")
+                    domains.append(name)
 
         return sorted(domains)
 

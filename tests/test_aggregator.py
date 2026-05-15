@@ -172,18 +172,6 @@ class TestAggregate:
         assert len(graph.failed_extractions) == 0
         assert graph.metadata.service_count == 0
 
-    def test_graph_entry_has_dependencies(
-        self, storage_with_manifests: LocalStorageBackend
-    ) -> None:
-        """Graph entries include dependency names."""
-        graph = aggregate(storage_with_manifests)
-
-        android = next(s for s in graph.services if s.name == "sample-android")
-        assert "retrofit" in android.dependencies
-
-        ios = next(s for s in graph.services if s.name == "sample-ios")
-        assert "Alamofire" in ios.dependencies
-
     def test_graph_entry_has_keywords(self, storage_with_manifests: LocalStorageBackend) -> None:
         """Graph entries include keywords."""
         graph = aggregate(storage_with_manifests)
