@@ -67,8 +67,15 @@ _EXCLUDED_DIRS = {"build", "generated", ".gradle", "out", "target"}
 _TEST_DIR_SEGMENTS = {"test", "androidTest", "integrationTest"}
 
 # Pattern to identify URL-like config keys in YAML (base-url, base-uri, .url, etc.)
+# Matches keys ending with any of:
+#   base-url, base_url, base-uri, base_uri  — typical service base-URL keys
+#   .url, .uri, .host, .endpoint            — dot-separated leaf keys
+#   -url, _url                              — arbitrary prefix + url suffix
+#                                             (covers verifications-url, wallet-decryption-url,
+#                                              environment_url, environment-url, etc.)
+#   url-token                               — legacy token-url variant
 _URL_KEY_PATTERN = re.compile(
-    r"(?:base[_-]?url|base[_-]?uri|\.url|\.host|\.endpoint|\.uri|url[_-]token)$",
+    r"(?:base[_-]?url|base[_-]?uri|\.url|\.host|\.endpoint|\.uri|url[_-]token|[_-]url|_url)$",
     re.IGNORECASE,
 )
 
@@ -578,10 +585,24 @@ class BackendJavaExtractor(Extractor):
     ) -> list[EndpointIndex]:
         """Extract endpoints from a single controller file.
 
-        Strategy: scan for @*Mapping annotations line by line. For each, look
-        in a bounded pre-annotation window (between this mapping and the previous
-        mapping) for @Operation summary and @Tag. Extract path from the annotation
-        itself using a targeted approach.
+        Strategy: scan for @*Mapping annotations. For each, search two windows
+        for @Operation summary and @Tag:
+
+        1. Pre-window: from the end of the previous @*Mapping (or a lookback limit)
+           to the start of this @*Mapping.  This is the common case where annotations
+           appear *above* the mapping decorator in the source order:
+               @Operation(summary = "...")
+               @GetMapping("/path")
+
+        2. Post-window: from the end of this @*Mapping annotation to the start of
+           the next @*Mapping (bounded to a reasonable size).  This handles the less
+           common but valid order where annotations appear *after* the mapping decorator:
+               @DeleteMapping("/path")
+               @Operation(summary = "...")
+               public ResponseEntity<...> method() { ... }
+
+        The pre-window result takes priority; the post-window is used only when the
+        pre-window yields no summary/tag.
         """
         endpoints: list[EndpointIndex] = []
 
@@ -603,24 +624,99 @@ class BackendJavaExtractor(Extractor):
             # Extract path from the mapping annotation arguments
             method_path = self._extract_mapping_path(content, method_match.start())
 
-            # The pre-annotation window: from the end of the previous @*Mapping annotation
-            # (or the class @RequestMapping) to the start of this @*Mapping.
-            # This isolates @Operation and @Tag for THIS method only.
+            # --- Build the annotation cluster windows for this mapping ---
+            #
+            # Annotations may appear either BEFORE or AFTER the @*Mapping decorator.
+            # Both patterns are valid Spring Boot code:
+            #
+            #   Pattern A (annotations before):      Pattern B (annotations after):
+            #     @Operation(summary = "...")           @DeleteMapping("/path")
+            #     @GetMapping("/path")                  @Operation(summary = "...")
+            #     public ResponseEntity<...> m() {}     public ResponseEntity<...> m() {}
+            #
+            # Strategy: use the first `{` AFTER the @*Mapping as the boundary of the
+            # post-annotation cluster.  Everything between the mapping and the first `{`
+            # belongs to THIS method's annotation block; everything after `{` is the
+            # method body (followed by the next method's annotations).
+            #
+            # Similarly, trim the pre-window at the LAST `}` (closing of the previous
+            # method body) so we don't pick up annotations from the previous method's
+            # post-mapping cluster.
+
+            # Post-window: from the end of the @*Mapping annotation's full argument list
+            # (including parentheses) to the first `{` that opens the method body.
+            # Bound to 600 chars to avoid pathological cases.
+            next_start = (
+                all_matches[i + 1].start()
+                if i + 1 < len(all_matches)
+                else len(content)
+            )
+            # _extract_mapping_path already locates the closing paren of the annotation.
+            # We need to find the character position just after the annotation's closing
+            # paren to avoid treating path-parameter braces (e.g. {userId}) as the
+            # method-body opening brace.
+            # Strategy: scan forward from method_match.end() for the closing ')' of the
+            # annotation arguments, then look for the first '{' that is NOT inside a
+            # string literal or path template (we use brace-depth counting).
+            ann_args_end = method_match.end()
+            # Skip optional whitespace, then check if there is an opening paren
+            pos = ann_args_end
+            while pos < len(content) and content[pos] in " \t":
+                pos += 1
+            if pos < len(content) and content[pos] == "(":
+                depth = 0
+                for j in range(pos, min(pos + 400, len(content))):
+                    if content[j] == "(":
+                        depth += 1
+                    elif content[j] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            ann_args_end = j + 1
+                            break
+
+            search_end = min(ann_args_end + 600, next_start)
+            segment_after = content[ann_args_end : search_end]
+
+            # Find the first '{' that is a method-body open brace, not a path parameter.
+            # The method signature contains () for params; the body opens with '{'.
+            # We detect the method body brace by finding the first '{' that comes AFTER
+            # closing ')' of the method signature.
+            method_sig_close = segment_after.find(")")
+            if method_sig_close >= 0:
+                body_candidate = segment_after.find("{", method_sig_close)
+            else:
+                body_candidate = segment_after.find("{")
+
+            if body_candidate >= 0:
+                post_window = segment_after[:body_candidate]
+            else:
+                post_window = segment_after
+
+            # Pre-window: from the end of the previous @*Mapping (or lookback limit)
+            # to the start of this @*Mapping, trimmed at the last `}` (previous method
+            # body close) to exclude annotations that belong to the previous method.
             if i == 0:
-                # Before the first method mapping — start from after class-level annotations
-                # Use a reasonable lookback but not too far
                 window_start = max(0, method_match.start() - 300)
             else:
-                # Start from the end of the previous method mapping annotation
                 prev_match = all_matches[i - 1]
                 window_start = prev_match.end()
 
-            pre_window = content[window_start : method_match.start()]
+            pre_window_raw = content[window_start : method_match.start()]
+            last_brace = pre_window_raw.rfind("}")
+            if last_brace >= 0:
+                pre_window = pre_window_raw[last_brace + 1:]
+            else:
+                pre_window = pre_window_raw
 
+            # Search pre-window first (most common pattern), then post-window as fallback.
             summary = self._extract_operation_summary(pre_window)
-
-            # Look for method-level @Tag (overrides class-level)
             method_tag = self._extract_tag_name(pre_window, scope="method")
+
+            if summary is None:
+                summary = self._extract_operation_summary(post_window)
+            if method_tag is None:
+                method_tag = self._extract_tag_name(post_window, scope="method")
+
             tag = method_tag or class_tag
 
             # Combine base path + method path
@@ -1230,6 +1326,37 @@ class BackendJavaExtractor(Extractor):
         """Return True if value looks like an unresolved Java constant (e.g. TOPIC_NAME)."""
         return bool(self._JAVA_CONSTANT_NAME_RE.match(value)) and len(value) > 2
 
+    def _scan_value_injected_fields_in_file(
+        self, content: str, yaml_props: dict[str, str]
+    ) -> dict[str, str]:
+        """Extract @Value-injected String field declarations from a single file's content.
+
+        Returns a dict mapping field name → resolved value for that file only.
+        Unlike _scan_value_injected_fields (which scans the whole codebase into one
+        dict and loses entries when multiple files share the same field name), this
+        per-file variant is used to resolve kafkaTemplate.send(fieldName, ...) against
+        the @Value declarations in the same class — matching real Spring injection scope.
+        """
+        fields: dict[str, str] = {}
+        value_field_pattern = re.compile(
+            r'@Value\s*\(\s*["\']\$\{([^}]+)\}["\']\s*\)\s*'
+            r'(?:private\s+|protected\s+|public\s+)?'
+            r'(?:final\s+)?String\s+(\w+)\s*;',
+            re.DOTALL,
+        )
+        for m in value_field_pattern.finditer(content):
+            el_expr = m.group(1)
+            field_name = m.group(2)
+            prop_key, _, default_val = el_expr.partition(":")
+            if default_val:
+                fields[field_name] = default_val
+            elif prop_key in yaml_props:
+                yaml_val = yaml_props[prop_key]
+                if yaml_val.startswith("${"):
+                    yaml_val = self._resolve_spring_el_topic(yaml_val)
+                fields[field_name] = yaml_val
+        return fields
+
     def _parse_kafka_producers(self, root: Path) -> list[str]:
         """Scan Java source and application.yml for Kafka producer patterns.
 
@@ -1239,6 +1366,10 @@ class BackendJavaExtractor(Extractor):
         3. kafkaTemplate.send(topicField, ...) — @Value-injected String field
         4. new ProducerRecord<>(topicField, ...) where topicField is @Value-injected
         5. @SendTo("topic") — reply topics on @KafkaListener methods
+
+        For pattern 3, per-file @Value resolution is used first so that multiple
+        publisher classes sharing the same field name (e.g. `topic`) are each resolved
+        against their own @Value declaration, not a codebase-wide last-write-wins dict.
 
         Fallback: When kafkaTemplate.send() uses a method parameter that cannot be
         resolved at the call site (common in publisher service classes), collect all
@@ -1257,13 +1388,19 @@ class BackendJavaExtractor(Extractor):
         constants = self._scan_java_for_static_string_constants(root)
         yaml_props = self._load_yaml_flat_props(root)
         value_fields = self._scan_value_injected_fields(root)
-        # Merge value_fields into constants so _resolve_kafka_topic_ref can use them
+        # Merge value_fields into constants for fallback resolution.
+        # NOTE: this dict has last-write-wins semantics for field names shared across
+        # files (e.g. all publishers using "topic").  Per-file resolution below takes
+        # priority for the common single-publisher-per-file pattern.
         merged = {**constants, **value_fields}
 
         # Pattern: kafkaTemplate.send(<arg>, ...)
-        # Argument can be a string literal, a constant ref, or a field/variable name
+        # Argument can be a string literal, a constant ref, or a field/variable name.
+        # Also handles the multi-line case where kafkaTemplate and .send() are on
+        # separate lines (e.g. kafkaTemplate\n    .send(topic, key, msg)).
         send_pattern = re.compile(
-            r"""kafkaTemplate\.send\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*[,)]""",
+            r"""kafkaTemplate\s*\.\s*send\(\s*(["']([^"']+)["']|\$\{[^}]+\}|[\w.]+)\s*[,)]""",
+            re.DOTALL,
         )
         # Pattern to detect ProducerRecord variable names in the file
         # e.g.: ProducerRecord<...> myVar = new ProducerRecord<>(...)
@@ -1303,6 +1440,14 @@ class BackendJavaExtractor(Extractor):
             if "kafkaTemplate" not in content and "@SendTo" not in content:
                 continue
 
+            # Build a per-file @Value field map so that multiple publisher classes
+            # using the same field name (e.g. `topic`) each resolve to their own topic.
+            per_file_value_fields = self._scan_value_injected_fields_in_file(
+                content, yaml_props
+            )
+            # Per-file resolution takes priority over the codebase-wide merged dict.
+            file_merged = {**merged, **per_file_value_fields}
+
             # Collect names of ProducerRecord variables in this file so we can skip them
             # when they appear as the first arg to kafkaTemplate.send()
             producer_record_vars = set(producer_record_var_pattern.findall(content))
@@ -1310,7 +1455,7 @@ class BackendJavaExtractor(Extractor):
             # Extract topics from new ProducerRecord<>(topicArg, ...) ctors
             for m in producer_record_ctor_pattern.finditer(content):
                 raw = m.group(1)
-                resolved = self._resolve_kafka_topic_ref(raw, merged, yaml_props)
+                resolved = self._resolve_kafka_topic_ref(raw, file_merged, yaml_props)
                 if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
                     seen.add(resolved)
                     produces.append(resolved)
@@ -1322,10 +1467,27 @@ class BackendJavaExtractor(Extractor):
                 raw_stripped = raw.strip().strip('"').strip("'")
                 if raw_stripped in producer_record_vars:
                     continue
-                resolved = self._resolve_kafka_topic_ref(raw, merged, yaml_props)
-                if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
-                    seen.add(resolved)
-                    produces.append(resolved)
+
+                # Determine if this arg was resolved via per-file @Value injection.
+                # When resolved via @Value, the result is a legitimate topic reference
+                # even if it looks like an ALL_CAPS env-var name (e.g. PAYMENTS_TOPIC).
+                # In that case we skip the _is_java_constant_name filter which would
+                # otherwise discard env-var-named topics.
+                resolved_from_value_field = (
+                    raw_stripped in per_file_value_fields
+                    and not raw_stripped.startswith(("'", '"', "${"))
+                    and "." not in raw_stripped
+                )
+
+                resolved = self._resolve_kafka_topic_ref(raw, file_merged, yaml_props)
+                if resolved and resolved not in seen:
+                    # Skip unresolved Java constant names UNLESS the value was obtained
+                    # directly from a @Value-injected field (where ALL_CAPS means env var).
+                    if not resolved_from_value_field and self._is_java_constant_name(resolved):
+                        pass  # discard — looks like an unresolved constant name
+                    else:
+                        seen.add(resolved)
+                        produces.append(resolved)
                 elif resolved is None:
                     # Topic arg is unresolvable at call site (likely a method parameter)
                     had_unresolved = True
@@ -1335,7 +1497,7 @@ class BackendJavaExtractor(Extractor):
 
             for m in sendto_pattern.finditer(content):
                 topic = m.group(1).strip()
-                resolved = self._resolve_kafka_topic_ref(topic, merged, yaml_props)
+                resolved = self._resolve_kafka_topic_ref(topic, file_merged, yaml_props)
                 if resolved and not self._is_java_constant_name(resolved) and resolved not in seen:
                     seen.add(resolved)
                     produces.append(resolved)
@@ -1492,7 +1654,7 @@ class BackendJavaExtractor(Extractor):
 
         url_key_pattern = _URL_KEY_PATTERN
 
-        # Excluded URL patterns (infrastructure, not services)
+        # Excluded URL patterns (infrastructure or non-HTTP targets, not service calls)
         excluded_url_patterns = [
             re.compile(p, re.IGNORECASE)
             for p in [
@@ -1509,6 +1671,7 @@ class BackendJavaExtractor(Extractor):
                 r"appconfig\.azure",
                 r"app-configuration",
                 r"application-configuration",
+                r"^(?!https?://)[a-zA-Z][a-zA-Z0-9+\-.]+://",  # Custom-scheme URIs (e.g. intuitdome://, myapp://)
             ]
         ]
 
@@ -1528,6 +1691,7 @@ class BackendJavaExtractor(Extractor):
                 r"^eureka\.",
                 r"^server\.",
                 r"^logging\.",
+                r"deeplink",             # Mobile deeplink URL config keys (not HTTP services)
             ]
         ]
 
@@ -1870,12 +2034,15 @@ class BackendJavaExtractor(Extractor):
     def _scan_http_exchange_bean_config_keys(self, root: Path) -> dict[str, str]:
         """Scan @Configuration classes for @HttpExchange client bean registrations.
 
-        Detects two patterns:
+        Detects the following patterns:
         1. Direct: HttpServiceProxyFactory.createClient(XxxClient.class) in a @Bean method
         2. Delegated: createWebClient(url, XxxClient.class) where createWebClient is a
            private helper that internally calls factory.createClient(clientType)
+        3. Concatenated @Value: @Value("${" + STRING_CONST + "}") where STRING_CONST is a
+           private static final String declared in the same class (resolves the constant
+           to extract the real config key).
 
-        In both cases, the @Value annotation on the enclosing @Bean method parameter
+        In all cases, the @Value annotation on the enclosing @Bean method parameter
         provides the config key.
 
         Returns a dict mapping interface name → config key.
@@ -1891,10 +2058,22 @@ class BackendJavaExtractor(Extractor):
         delegated_client_pattern = re.compile(
             r"\bcreate\w*\s*\(\s*\w+\s*,\s*(\w+)\.class\s*\)"
         )
-        # Pattern for @Value on method parameters
+        # Pattern for @Value on method parameters (literal Spring EL)
         value_param_pattern = re.compile(
             r'@Value\s*\(\s*["\'](\$\{[^}]+\})["\']'
             r'\s*\)\s*String\s+(\w+)',
+        )
+        # Pattern for concatenated @Value: @Value("${" + CONST_NAME + "}")
+        # Matches the string-concatenation form used when the key is stored in a constant.
+        value_param_concat_pattern = re.compile(
+            r'@Value\s*\(\s*["\'][^"\']*\$\{[^"\']*["\']\s*\+\s*(\w+)\s*\+\s*["\'][^"\']*\}[^"\']*["\']\s*\)'
+            r'\s*\)\s*String\s+(\w+)'
+            r'|'
+            r'@Value\s*\(\s*"\$\{"\s*\+\s*(\w+)\s*\+\s*"\}"\s*\)\s*String\s+(\w+)',
+        )
+        # Pattern to extract private static final String constants from the same file
+        string_const_pattern = re.compile(
+            r'(?:private|protected|public)\s+static\s+final\s+String\s+(\w+)\s*=\s*["\']([^"\']+)["\']',
         )
 
         for java_file in root.rglob("*.java"):
@@ -1910,6 +2089,13 @@ class BackendJavaExtractor(Extractor):
 
             if "HttpServiceProxyFactory" not in content and "createClient" not in content:
                 continue
+
+            # Build a map of String constants defined in this file
+            # (used to resolve concatenated @Value expressions)
+            file_string_consts: dict[str, str] = {
+                m.group(1): m.group(2)
+                for m in string_const_pattern.finditer(content)
+            }
 
             # Find all client references — both direct and delegated patterns
             client_refs: dict[str, int] = {}  # iface_name → position
@@ -1928,7 +2114,7 @@ class BackendJavaExtractor(Extractor):
             # with @Value parameter
             for iface_name, pos in client_refs.items():
                 self._link_client_to_config_key(
-                    content, iface_name, pos, result
+                    content, iface_name, pos, result, file_string_consts
                 )
 
             # Also handle the case where @Value params are not directly linkable
@@ -1949,32 +2135,63 @@ class BackendJavaExtractor(Extractor):
         iface_name: str,
         create_client_pos: int,
         result: dict[str, str],
+        file_string_consts: dict[str, str] | None = None,
     ) -> None:
         """Link a createClient(XxxClient.class) call to its @Value config key.
 
         Searches backwards from the createClient position to find the enclosing
         method's @Value parameter annotation.
+
+        Handles two @Value forms:
+        1. Literal: @Value("${some.config.key}") String url
+        2. Concatenated: @Value("${" + STRING_CONST + "}") String url
+           where STRING_CONST is resolved via file_string_consts.
         """
         url_key_re = _URL_KEY_PATTERN
+        if file_string_consts is None:
+            file_string_consts = {}
 
         # Look backwards for the nearest @Value("${...}") String param
         # within a reasonable distance (up to the previous @Bean or start)
         search_start = max(0, create_client_pos - 1500)
         window = content[search_start:create_client_pos]
 
+        # Pattern 1: literal Spring EL @Value
         value_param_re = re.compile(
             r'@Value\s*\(\s*["\'](\$\{([^}]+)\})["\']'
             r'\s*\)\s*String\s+\w+',
         )
+        # Pattern 2: concatenated form — @Value("${" + CONST_NAME + "}") String param
+        value_param_concat_re = re.compile(
+            r'@Value\s*\(\s*"\$\{"\s*\+\s*(\w+)\s*\+\s*"\}"\s*\)'
+            r'\s*String\s+\w+',
+        )
+
         # Find the LAST @Value match in the window (closest to createClient)
         last_match = None
+        last_match_pos = -1
         for m in value_param_re.finditer(window):
-            last_match = m
+            if m.start() > last_match_pos:
+                last_match = m
+                last_match_pos = m.start()
 
-        if last_match:
+        last_concat_match = None
+        last_concat_pos = -1
+        for m in value_param_concat_re.finditer(window):
+            if m.start() > last_concat_pos:
+                last_concat_match = m
+                last_concat_pos = m.start()
+
+        # Use whichever match is closest to createClient (highest position)
+        if last_match and last_match_pos >= last_concat_pos:
             inner = last_match.group(2)
             prop_key = inner.split(":")[0]
             if url_key_re.search(prop_key):
+                result[iface_name] = prop_key
+        elif last_concat_match:
+            const_name = last_concat_match.group(1)
+            prop_key = file_string_consts.get(const_name, "")
+            if prop_key and url_key_re.search(prop_key):
                 result[iface_name] = prop_key
 
     def _link_by_method_boundaries(

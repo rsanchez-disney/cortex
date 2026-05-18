@@ -2600,3 +2600,325 @@ class TestHttpExchangeInterfaceScanning:
         eps = interfaces["FullClient"]
         methods = {ep.method for ep in eps}
         assert methods == {"GET", "POST", "PUT", "DELETE", "PATCH"}
+
+
+# ---------------------------------------------------------------------------
+# TestKafkaProducerPerFileResolution — regression for field-name collision fix
+# ---------------------------------------------------------------------------
+
+
+class TestKafkaProducerPerFileResolution:
+    """Regression tests for per-file @Value resolution in Kafka producer detection.
+
+    The bug: when multiple publisher classes all use the same field name (e.g. `topic`),
+    the codebase-wide _scan_value_injected_fields dict had last-write-wins semantics,
+    causing all but one topic to be lost.  The fix uses per-file resolution so each
+    publisher resolves its own `topic` field independently.
+    """
+
+    def test_multiple_publishers_same_field_name_all_detected(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Multiple publishers all named 'topic' field each resolve to their own topic."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+
+        # YAML defines all topics
+        (resources / "application.yml").write_text(
+            "spring:\n"
+            "  kafka:\n"
+            "    topics:\n"
+            "      orders-mgmt: orders-mgmt-topic\n"
+            "      payments-history: payments-history-topic\n"
+            "      push-notifications: push-notifications-topic\n"
+            "      domain-events: payment-domain-events\n"
+        )
+
+        # Publisher A: uses field name `topic` for orders-mgmt
+        (src / "OrdersPublisher.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "@Component\n"
+            "public class OrdersPublisher {\n"
+            '    @Value("${spring.kafka.topics.orders-mgmt}")\n'
+            "    private String topic;\n"
+            "    private final KafkaTemplate<String, Object> kafkaTemplate;\n"
+            "    public void send(Object msg) {\n"
+            '        kafkaTemplate.send(topic, "key", msg);\n'
+            "    }\n"
+            "}\n"
+        )
+
+        # Publisher B: also uses field name `topic` for payments-history
+        (src / "PaymentHistoryPublisher.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "@Component\n"
+            "public class PaymentHistoryPublisher {\n"
+            '    @Value("${spring.kafka.topics.payments-history}")\n'
+            "    private String topic;\n"
+            "    private final KafkaTemplate<String, Object> kafkaTemplate;\n"
+            "    public void send(Object msg) {\n"
+            '        kafkaTemplate.send(topic, "key", msg);\n'
+            "    }\n"
+            "}\n"
+        )
+
+        # Publisher C: also uses field name `topic` for push-notifications
+        (src / "PushNotificationPublisher.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "@Component\n"
+            "public class PushNotificationPublisher {\n"
+            '    @Value("${spring.kafka.topics.push-notifications}")\n'
+            "    private String topic;\n"
+            "    private final KafkaTemplate<String, Object> kafkaTemplate;\n"
+            "    public void send(Object msg) {\n"
+            '        kafkaTemplate.send(topic, "key", msg);\n'
+            "    }\n"
+            "}\n"
+        )
+
+        # Publisher D: also uses field name `topic` for domain-events
+        (src / "DomainEventPublisher.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "@Component\n"
+            "public class DomainEventPublisher {\n"
+            '    @Value("${spring.kafka.topics.domain-events}")\n'
+            "    private String topic;\n"
+            "    private final KafkaTemplate<String, Object> kafkaTemplate;\n"
+            "    public void send(Object msg) {\n"
+            '        kafkaTemplate.send(topic, "key", msg);\n'
+            "    }\n"
+            "}\n"
+        )
+
+        produces = extractor._parse_kafka_producers(tmp_path)
+
+        # All four publishers must be detected — not just one (the last-write-wins victim)
+        assert "orders-mgmt-topic" in produces, (
+            "orders-mgmt-topic missing — per-file resolution not working"
+        )
+        assert "payments-history-topic" in produces, (
+            "payments-history-topic missing — per-file resolution not working"
+        )
+        assert "push-notifications-topic" in produces, (
+            "push-notifications-topic missing — per-file resolution not working"
+        )
+        assert "payment-domain-events" in produces, (
+            "payment-domain-events missing — per-file resolution not working"
+        )
+
+    def test_scan_value_injected_fields_in_file_returns_per_file_map(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """_scan_value_injected_fields_in_file returns the field map for just that file."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n  kafka:\n    topics:\n      my-topic: my-resolved-topic\n"
+        )
+        yaml_props = extractor._load_yaml_flat_props(tmp_path)
+        content = (
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "public class MyPublisher {\n"
+            '    @Value("${spring.kafka.topics.my-topic}")\n'
+            "    private String topic;\n"
+            "}\n"
+        )
+        fields = extractor._scan_value_injected_fields_in_file(content, yaml_props)
+        assert fields.get("topic") == "my-resolved-topic"
+
+
+# ---------------------------------------------------------------------------
+# TestOutboundCallNonStandardUrlKeys — regression for expanded _URL_KEY_PATTERN
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundCallNonStandardUrlKeys:
+    """Regression tests for outbound call detection with non-standard YAML key suffixes.
+
+    The bug: keys ending in -url or _url (e.g. verifications-url, environment_url)
+    were not matched by _URL_KEY_PATTERN which only covered base-url / base-uri.
+    The fix broadens the pattern to match any key ending with -url or _url.
+    """
+
+    def test_verifications_url_key_detected(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Keys ending with -url (e.g. verifications-url) are detected as outbound calls."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n"
+            "  chase:\n"
+            "    verifications-url: ${CHASE_VERIFICATIONS_URL:https://cat-api.merchant.jpmorgan.com/api}\n"
+            "    wallet-decryption-url: ${WALLET_DECRYPTION_URL:https://cat-api.merchant.jpmorgan.com/api}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        config_keys = {c.config_key for c in calls}
+        assert "spring.chase.verifications-url" in config_keys, (
+            "verifications-url key not detected — _URL_KEY_PATTERN not matching -url suffix"
+        )
+        assert "spring.chase.wallet-decryption-url" in config_keys, (
+            "wallet-decryption-url key not detected — _URL_KEY_PATTERN not matching -url suffix"
+        )
+
+    def test_environment_url_key_detected(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """Keys ending with _url (e.g. environment_url) are detected as outbound calls."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n"
+            "  microsoft:\n"
+            "    refund:\n"
+            "      environment_url:"
+            " ${RETURN_CART_LINES_ENV_URL:https://scus8l625me54960702-rs.su.retail.dynamics.com/Commerce}\n"
+        )
+        calls = extractor._parse_outbound_service_calls(tmp_path)
+        config_keys = {c.config_key for c in calls}
+        assert "spring.microsoft.refund.environment_url" in config_keys, (
+            "environment_url key not detected — _URL_KEY_PATTERN not matching _url suffix"
+        )
+
+    def test_chase_client_linked_via_verifications_url(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@HttpExchange client registered with @Value('${spring.chase.verifications-url}')
+        is linked to the outbound call for that config key."""
+        resources = tmp_path / "src" / "main" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "application.yml").write_text(
+            "spring:\n"
+            "  chase:\n"
+            "    verifications-url: ${CHASE_URL:https://cat-api.merchant.jpmorgan.com/api}\n"
+        )
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "TokenizationClient.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.service.annotation.HttpExchange;\n"
+            "import org.springframework.web.service.annotation.PostExchange;\n"
+            "@HttpExchange\n"
+            "public interface TokenizationClient {\n"
+            '    @PostExchange("/v2/verifications")\n'
+            "    Object tokenize(Object request);\n"
+            "}\n"
+        )
+        (src / "WebConfig.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "import org.springframework.context.annotation.Bean;\n"
+            "import org.springframework.context.annotation.Configuration;\n"
+            "import org.springframework.web.reactive.function.client.support.WebClientAdapter;\n"
+            "import org.springframework.web.service.invoker.HttpServiceProxyFactory;\n"
+            "@Configuration\n"
+            "public class WebConfig {\n"
+            "    @Bean\n"
+            '    TokenizationClient tokenizationClient(@Value("${spring.chase.verifications-url}") String url) {\n'
+            "        WebClientAdapter adapter = WebClientAdapter.forClient(null);\n"
+            "        return HttpServiceProxyFactory.builder(adapter).build().createClient(TokenizationClient.class);\n"
+            "    }\n"
+            "}\n"
+        )
+        result = extractor._scan_http_exchange_bean_config_keys(tmp_path)
+        assert result.get("TokenizationClient") == "spring.chase.verifications-url"
+
+
+# ---------------------------------------------------------------------------
+# TestEndpointSummaryPostWindow — regression for summary attribution fix
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointSummaryPostWindow:
+    """Regression tests for @Operation summary attribution when placed after @*Mapping.
+
+    The bug: when @Operation(summary=...) appears AFTER the @*Mapping annotation
+    (not before it), the pre-window strategy assigned that summary to the NEXT
+    endpoint instead of the current one.  The fix adds a post-window fallback.
+    """
+
+    def test_summary_after_mapping_attributed_correctly(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Operation placed after @DeleteMapping is attributed to that DELETE endpoint."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "PaymentController.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "import io.swagger.v3.oas.annotations.Operation;\n"
+            "@RestController\n"
+            "@RequestMapping(\"/v1\")\n"
+            "public class PaymentController {\n"
+            "\n"
+            "    @DeleteMapping(\"/payment-method/{userId}/{id}\")\n"
+            '    @Operation(summary = "Delete payment method")\n'
+            "    public void delete(String userId, String id) {}\n"
+            "\n"
+            "    @PatchMapping(\"/payment-method/{userId}/preferred/\")\n"
+            '    @Operation(summary = "Set preferred payment method")\n'
+            "    public void setPreferred(String userId) {}\n"
+            "\n"
+            "    @PatchMapping(\"/payment-method/{userId}/nickname/\")\n"
+            '    @Operation(summary = "Update nickname")\n'
+            "    public void updateNickname(String userId) {}\n"
+            "}\n"
+        )
+        from cortex.schema import ServiceYaml
+        contracts = extractor.find_api_contracts(tmp_path)
+        assert contracts, "No API contracts extracted"
+        endpoints = contracts[0].endpoints
+
+        ep_map = {(ep.method, ep.path): ep.summary for ep in endpoints}
+
+        assert ep_map.get(("DELETE", "/v1/payment-method/{userId}/{id}")) == "Delete payment method", (
+            "DELETE summary attributed to wrong endpoint"
+        )
+        assert ep_map.get(("PATCH", "/v1/payment-method/{userId}/preferred/")) == "Set preferred payment method", (
+            "PATCH preferred summary attributed to wrong endpoint — likely shifted from DELETE"
+        )
+        assert ep_map.get(("PATCH", "/v1/payment-method/{userId}/nickname/")) == "Update nickname", (
+            "PATCH nickname summary attributed to wrong endpoint"
+        )
+
+    def test_pre_window_summary_still_works(
+        self, extractor: BackendJavaExtractor, tmp_path: Path
+    ) -> None:
+        """@Operation placed BEFORE @GetMapping still works correctly (no regression)."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "OrderController.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "import io.swagger.v3.oas.annotations.Operation;\n"
+            "@RestController\n"
+            "@RequestMapping(\"/v1\")\n"
+            "public class OrderController {\n"
+            "\n"
+            '    @Operation(summary = "List orders")\n'
+            "    @GetMapping(\"/orders\")\n"
+            "    public void listOrders() {}\n"
+            "\n"
+            '    @Operation(summary = "Create order")\n'
+            "    @PostMapping(\"/orders\")\n"
+            "    public void createOrder() {}\n"
+            "}\n"
+        )
+        contracts = extractor.find_api_contracts(tmp_path)
+        assert contracts
+        endpoints = contracts[0].endpoints
+        ep_map = {(ep.method, ep.path): ep.summary for ep in endpoints}
+
+        assert ep_map.get(("GET", "/v1/orders")) == "List orders"
+        assert ep_map.get(("POST", "/v1/orders")) == "Create order"
