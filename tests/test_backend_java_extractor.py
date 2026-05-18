@@ -2825,9 +2825,14 @@ class TestOutboundCallNonStandardUrlKeys:
             "@Configuration\n"
             "public class WebConfig {\n"
             "    @Bean\n"
-            '    TokenizationClient tokenizationClient(@Value("${spring.chase.verifications-url}") String url) {\n'
-            "        WebClientAdapter adapter = WebClientAdapter.forClient(null);\n"
-            "        return HttpServiceProxyFactory.builder(adapter).build().createClient(TokenizationClient.class);\n"
+            "    TokenizationClient tokenizationClient("
+            '@Value("${spring.chase.verifications-url}") '
+            "String url) {\n"
+            "        WebClientAdapter adapter = "
+            "WebClientAdapter.forClient(null);\n"
+            "        return HttpServiceProxyFactory.builder(adapter)"
+            ".build().createClient("
+            "TokenizationClient.class);\n"
             "    }\n"
             "}\n"
         )
@@ -2875,20 +2880,32 @@ class TestEndpointSummaryPostWindow:
             "    public void updateNickname(String userId) {}\n"
             "}\n"
         )
-        from cortex.schema import ServiceYaml
         contracts = extractor.find_api_contracts(tmp_path)
         assert contracts, "No API contracts extracted"
         endpoints = contracts[0].endpoints
 
         ep_map = {(ep.method, ep.path): ep.summary for ep in endpoints}
 
-        assert ep_map.get(("DELETE", "/v1/payment-method/{userId}/{id}")) == "Delete payment method", (
+        delete_key = ("DELETE", "/v1/payment-method/{userId}/{id}")
+        assert ep_map.get(delete_key) == "Delete payment method", (
             "DELETE summary attributed to wrong endpoint"
         )
-        assert ep_map.get(("PATCH", "/v1/payment-method/{userId}/preferred/")) == "Set preferred payment method", (
-            "PATCH preferred summary attributed to wrong endpoint — likely shifted from DELETE"
+        patch_pref_key = (
+            "PATCH", "/v1/payment-method/{userId}/preferred/"
         )
-        assert ep_map.get(("PATCH", "/v1/payment-method/{userId}/nickname/")) == "Update nickname", (
+        assert (
+            ep_map.get(patch_pref_key)
+            == "Set preferred payment method"
+        ), (
+            "PATCH preferred summary attributed to wrong endpoint"
+            " — likely shifted from DELETE"
+        )
+        patch_nick_key = (
+            "PATCH", "/v1/payment-method/{userId}/nickname/"
+        )
+        assert (
+            ep_map.get(patch_nick_key) == "Update nickname"
+        ), (
             "PATCH nickname summary attributed to wrong endpoint"
         )
 
@@ -2922,3 +2939,349 @@ class TestEndpointSummaryPostWindow:
 
         assert ep_map.get(("GET", "/v1/orders")) == "List orders"
         assert ep_map.get(("POST", "/v1/orders")) == "Create order"
+
+
+# ---------------------------------------------------------------------------
+# TestEndpointParameterExtraction — parameter, body, response extraction
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointParameterExtraction:
+    """Tests for endpoint parameter, request body, and response extraction."""
+
+    def setup_method(self):
+        self.extractor = BackendJavaExtractor()
+
+    # --- _split_params_respecting_generics ---
+
+    def test_split_simple_params(self):
+        result = self.extractor._split_params_respecting_generics("String name, int age")
+        assert result == ["String name", "int age"]
+
+    def test_split_generic_params(self):
+        result = self.extractor._split_params_respecting_generics(
+            "Map<String, List<Integer>> map, @RequestParam String name"
+        )
+        assert result == ["Map<String, List<Integer>> map", "@RequestParam String name"]
+
+    def test_split_empty(self):
+        result = self.extractor._split_params_respecting_generics("")
+        assert result == []
+
+    # --- _extract_method_signature ---
+
+    def test_extract_simple_signature(self):
+        text = """
+    public ResponseEntity<OrderDto> getOrder(@PathVariable String id) {
+        return ResponseEntity.ok().build();
+    }
+"""
+        sig = self.extractor._extract_method_signature(text)
+        assert sig is not None
+        assert "ResponseEntity<OrderDto>" in sig
+        assert "getOrder" in sig
+        assert "@PathVariable String id" in sig
+
+    def test_extract_signature_with_annotations_before(self):
+        text = """
+    @Operation(summary = "Get order")
+    @Tag(name = "Orders")
+    public ResponseEntity<OrderDto> getOrder(@PathVariable String id) {
+        return ResponseEntity.ok().build();
+    }
+"""
+        sig = self.extractor._extract_method_signature(text)
+        assert sig is not None
+        assert "ResponseEntity<OrderDto>" in sig
+        assert "@PathVariable String id" in sig
+
+    def test_extract_signature_interface_method(self):
+        text = """
+    ResponseEntity<List<RewardDto>> listRewards(@RequestParam String memberId);
+"""
+        sig = self.extractor._extract_method_signature(text)
+        assert sig is not None
+        assert "ResponseEntity<List<RewardDto>>" in sig
+        assert "@RequestParam String memberId" in sig
+
+    def test_extract_signature_multiline(self):
+        text = """
+    public ResponseEntity<OrderDto> createOrder(
+            @RequestBody CreateOrderRequest request,
+            @RequestHeader("Authorization") String auth) {
+        return ResponseEntity.ok().build();
+    }
+"""
+        sig = self.extractor._extract_method_signature(text)
+        assert sig is not None
+        assert "@RequestBody CreateOrderRequest request" in sig
+        assert '@RequestHeader("Authorization") String auth' in sig
+
+    def test_extract_signature_void_return(self):
+        text = """
+    public void deleteOrder(@PathVariable String id) {
+        // delete
+    }
+"""
+        sig = self.extractor._extract_method_signature(text)
+        assert sig is not None
+        assert "void" in sig
+
+    def test_extract_signature_no_method(self):
+        text = "// just a comment"
+        sig = self.extractor._extract_method_signature(text)
+        assert sig is None
+
+    # --- _extract_parameters_from_signature ---
+
+    def test_extract_path_variable(self):
+        sig = "ResponseEntity<OrderDto> getOrder(@PathVariable String id)"
+        params = self.extractor._extract_parameters_from_signature(sig)
+        assert len(params) == 1
+        assert params[0].name == "id"
+        assert params[0].location == "path"
+        assert params[0].type == "String"
+
+    def test_extract_request_param_with_attributes(self):
+        sig = (
+            'ResponseEntity<List<OrderDto>> listOrders('
+            '@RequestParam(value = "status", required = false) '
+            'String status, '
+            '@RequestParam(defaultValue = "0") int page)'
+        )
+        params = self.extractor._extract_parameters_from_signature(sig)
+        assert len(params) == 2
+
+        status_param = params[0]
+        assert status_param.name == "status"
+        assert status_param.location == "query"
+        assert status_param.type == "String"
+        assert status_param.required is False
+
+        page_param = params[1]
+        assert page_param.name == "page"
+        assert page_param.location == "query"
+        assert page_param.type == "int"
+        assert page_param.default_value == "0"
+
+    def test_extract_request_header(self):
+        sig = (
+            'ResponseEntity<Void> cancelOrder('
+            '@PathVariable String id, '
+            '@RequestHeader("X-Correlation-Id") '
+            'String correlationId)'
+        )
+        params = self.extractor._extract_parameters_from_signature(sig)
+        assert len(params) == 2
+
+        id_param = params[0]
+        assert id_param.name == "id"
+        assert id_param.location == "path"
+
+        header_param = params[1]
+        assert header_param.name == "X-Correlation-Id"
+        assert header_param.location == "header"
+        assert header_param.type == "String"
+
+    def test_extract_params_skips_unannotated(self):
+        sig = (
+            "ResponseEntity<OrderDto> getOrder("
+            "@PathVariable String id, "
+            "HttpServletRequest request)"
+        )
+        params = self.extractor._extract_parameters_from_signature(sig)
+        assert len(params) == 1
+        assert params[0].name == "id"
+
+    def test_extract_params_empty_signature(self):
+        sig = "ResponseEntity<OrderDto> listOrders()"
+        params = self.extractor._extract_parameters_from_signature(sig)
+        assert params == []
+
+    def test_extract_path_variable_with_name(self):
+        sig = 'ResponseEntity<OrderDto> getOrder(@PathVariable("orderId") String id)'
+        params = self.extractor._extract_parameters_from_signature(sig)
+        assert len(params) == 1
+        assert params[0].name == "orderId"
+        assert params[0].location == "path"
+
+    # --- _extract_request_body_from_signature ---
+
+    def test_extract_request_body(self):
+        sig = "ResponseEntity<OrderDto> createOrder(@RequestBody CreateOrderRequest request)"
+        body = self.extractor._extract_request_body_from_signature(sig)
+        assert body is not None
+        assert body.type == "CreateOrderRequest"
+        assert body.required is True
+
+    def test_extract_request_body_optional(self):
+        sig = "ResponseEntity<OrderDto> updateOrder(@RequestBody(required = false) UpdateDto dto)"
+        body = self.extractor._extract_request_body_from_signature(sig)
+        assert body is not None
+        assert body.type == "UpdateDto"
+        assert body.required is False
+
+    def test_extract_request_body_generic(self):
+        sig = "ResponseEntity<OrderDto> createOrders(@RequestBody List<OrderItemDto> items)"
+        body = self.extractor._extract_request_body_from_signature(sig)
+        assert body is not None
+        assert body.type == "List<OrderItemDto>"
+
+    def test_extract_no_request_body(self):
+        sig = "ResponseEntity<OrderDto> getOrder(@PathVariable String id)"
+        body = self.extractor._extract_request_body_from_signature(sig)
+        assert body is None
+
+    # --- _extract_return_type_from_signature ---
+
+    def test_extract_response_entity(self):
+        sig = "ResponseEntity<OrderDto> getOrder(@PathVariable String id)"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "OrderDto"
+        assert resp.wrapper == "ResponseEntity"
+
+    def test_extract_response_entity_list(self):
+        sig = "ResponseEntity<List<OrderDto>> listOrders()"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "List<OrderDto>"
+        assert resp.wrapper == "ResponseEntity"
+
+    def test_extract_response_entity_void(self):
+        sig = "ResponseEntity<Void> deleteOrder(@PathVariable String id)"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "Void"
+        assert resp.wrapper == "ResponseEntity"
+
+    def test_extract_void_return(self):
+        sig = "void deleteOrder(@PathVariable String id)"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "void"
+        assert resp.wrapper is None
+
+    def test_extract_plain_dto_return(self):
+        sig = "OrderDto getOrder(@PathVariable String id)"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "OrderDto"
+        assert resp.wrapper is None
+
+    def test_extract_mono_response_entity(self):
+        sig = "Mono<ResponseEntity<OrderDto>> getOrder(@PathVariable String id)"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "OrderDto"
+        assert resp.wrapper == "Mono<ResponseEntity>"
+
+    def test_extract_flux_return(self):
+        sig = "Flux<OrderDto> streamOrders()"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "OrderDto"
+        assert resp.wrapper == "Flux"
+
+    def test_extract_response_entity_wildcard(self):
+        sig = "ResponseEntity<?> handleRequest()"
+        resp = self.extractor._extract_return_type_from_signature(sig)
+        assert resp is not None
+        assert resp.type == "?"
+        assert resp.wrapper == "ResponseEntity"
+
+    # --- _unwrap_response_type ---
+
+    def test_unwrap_simple_wrapper(self):
+        wrapper, inner = self.extractor._unwrap_response_type("ResponseEntity<OrderDto>")
+        assert wrapper == "ResponseEntity"
+        assert inner == "OrderDto"
+
+    def test_unwrap_nested_wrapper(self):
+        wrapper, inner = self.extractor._unwrap_response_type("Mono<ResponseEntity<OrderDto>>")
+        assert wrapper == "Mono<ResponseEntity>"
+        assert inner == "OrderDto"
+
+    def test_unwrap_non_wrapper(self):
+        wrapper, inner = self.extractor._unwrap_response_type("List<OrderDto>")
+        assert wrapper is None
+        assert inner == "List<OrderDto>"
+
+    def test_unwrap_no_generics(self):
+        wrapper, inner = self.extractor._unwrap_response_type("OrderDto")
+        assert wrapper is None
+        assert inner == "OrderDto"
+
+    # --- Integration: fixture-based tests ---
+
+    def test_order_controller_endpoints_have_params(self, extractor: BackendJavaExtractor) -> None:
+        """Test that OrderController endpoints extract parameters, body, and response."""
+        contracts = extractor.find_api_contracts(SAMPLE_BACKEND_JAVA_REPO)
+        assert len(contracts) > 0
+
+        endpoints = contracts[0].endpoints
+        # Find the list orders endpoint (GET /v1/orders)
+        list_ep = next((e for e in endpoints if e.method == "GET" and e.path == "/v1/orders"), None)
+        assert list_ep is not None, "GET /v1/orders endpoint not found"
+        # Should have query parameters
+        assert len(list_ep.parameters) >= 1
+        param_names = {p.name for p in list_ep.parameters}
+        assert "status" in param_names or "page" in param_names
+        # Should have response
+        assert list_ep.response is not None
+
+        # Find the create order endpoint (POST /v1/orders)
+        create_ep = next(
+            (e for e in endpoints
+             if e.method == "POST" and e.path == "/v1/orders"),
+            None,
+        )
+        assert create_ep is not None, "POST /v1/orders not found"
+        # Should have request body
+        assert create_ep.request_body is not None
+        assert create_ep.request_body.type == "CreateOrderRequest"
+        # Should have response
+        assert create_ep.response is not None
+
+        # Find the get order endpoint (GET /v1/orders/{id})
+        get_ep = next(
+            (e for e in endpoints
+             if e.method == "GET" and e.path == "/v1/orders/{id}"),
+            None,
+        )
+        assert get_ep is not None, "GET /v1/orders/{id} not found"
+        # Should have path variable
+        assert len(get_ep.parameters) >= 1
+        id_param = next((p for p in get_ep.parameters if p.location == "path"), None)
+        assert id_param is not None
+        assert id_param.name == "id"
+
+    def test_rewards_api_interface_endpoints_have_params(
+        self, extractor: BackendJavaExtractor,
+    ) -> None:
+        """Test that RewardsApi interface endpoints extract parameters via implements pattern."""
+        contracts = extractor.find_api_contracts(SAMPLE_BACKEND_JAVA_REPO)
+        assert len(contracts) > 0
+
+        endpoints = contracts[0].endpoints
+        # Find rewards endpoints (from RewardsApi interface)
+        rewards_eps = [e for e in endpoints if e.path and "/rewards" in e.path]
+        assert len(rewards_eps) > 0, "No rewards endpoints found"
+
+        # Find list rewards endpoint (GET /v1/rewards)
+        list_ep = next(
+            (e for e in rewards_eps
+             if e.method == "GET" and e.path == "/v1/rewards"),
+            None,
+        )
+        if list_ep:
+            assert len(list_ep.parameters) >= 1
+            member_param = next((p for p in list_ep.parameters if p.name == "memberId"), None)
+            assert member_param is not None
+            assert member_param.location == "query"
+
+        # Find redeem endpoint (POST /v1/rewards/{rewardId}/redeem)
+        redeem_ep = next((e for e in rewards_eps if e.method == "POST"), None)
+        if redeem_ep:
+            assert redeem_ep.request_body is not None
+            assert redeem_ep.request_body.type == "RedeemRequest"

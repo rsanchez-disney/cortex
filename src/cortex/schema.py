@@ -108,6 +108,30 @@ class EntryPoint(BaseModel):
     ref: str
 
 
+class EndpointParameter(BaseModel):
+    """A single request parameter extracted from Spring annotations."""
+
+    name: str
+    location: str  # "query", "path", "header"
+    type: str | None = None  # Java type: "String", "Long", "int", etc.
+    required: bool | None = None  # None = not explicitly set
+    default_value: str | None = None  # from defaultValue attribute
+
+
+class EndpointRequestBody(BaseModel):
+    """Request body type extracted from @RequestBody annotation."""
+
+    type: str  # DTO class name: "CreateOrderRequest", "OrderDto"
+    required: bool = True  # @RequestBody(required = false)
+
+
+class EndpointResponse(BaseModel):
+    """Response type extracted from method return type."""
+
+    type: str  # Unwrapped type: "OrderDto", "List<OrderDto>", "void"
+    wrapper: str | None = None  # Outer wrapper: "ResponseEntity", "Mono", "Flux", etc.
+
+
 class EndpointIndex(BaseModel):
     """A single endpoint entry in the API contract index."""
 
@@ -116,6 +140,9 @@ class EndpointIndex(BaseModel):
     summary: str | None = None
     tags: list[str] = Field(default_factory=list)
     operation_id: str | None = None
+    parameters: list[EndpointParameter] = Field(default_factory=list)
+    request_body: EndpointRequestBody | None = None
+    response: EndpointResponse | None = None
 
 
 class ApiContract(BaseModel):

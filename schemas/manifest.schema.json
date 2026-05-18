@@ -163,7 +163,40 @@
                   "type": "array",
                   "items": { "type": "string" }
                 },
-                "operation_id": { "type": "string" }
+                "operation_id": { "type": "string" },
+                "parameters": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "location"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "location": { "type": "string", "enum": ["query", "path", "header"] },
+                      "type": { "type": ["string", "null"] },
+                      "required": { "type": "boolean" },
+                      "default_value": { "type": ["string", "null"] }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "request_body": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "required": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                },
+                "response": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "wrapper": { "type": ["string", "null"] }
+                  },
+                  "additionalProperties": false
+                }
               },
               "additionalProperties": false
             }
@@ -271,7 +304,40 @@
                   "type": "array",
                   "items": { "type": "string" }
                 },
-                "operation_id": { "type": "string" }
+                "operation_id": { "type": "string" },
+                "parameters": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "location"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "location": { "type": "string", "enum": ["query", "path", "header"] },
+                      "type": { "type": ["string", "null"] },
+                      "required": { "type": "boolean" },
+                      "default_value": { "type": ["string", "null"] }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "request_body": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "required": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                },
+                "response": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "wrapper": { "type": ["string", "null"] }
+                  },
+                  "additionalProperties": false
+                }
               },
               "additionalProperties": false
             }
