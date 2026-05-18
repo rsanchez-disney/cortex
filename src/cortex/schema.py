@@ -1,4 +1,4 @@
-"""Pydantic v2 models for Platform Atlas schemas.
+"""Pydantic v2 models for Platform Cortex schemas.
 
 Covers:
 - ServiceYaml: input schema for service.yaml

@@ -208,7 +208,7 @@ def _resolve_kafka_edges(manifests: list[dict]) -> list[ServiceEdge]:
 
     For each topic, creates ServiceEdge objects linking producers to consumers.
     If a topic has producers but no consumers (or vice versa), no edge is created
-    since the counterpart is outside Atlas-tracked services.
+    since the counterpart is outside Cortex-tracked services.
 
     Topic names stored as ``${VAR:default}`` are resolved to their default value
     before matching, so producer/consumer sides with different Spring EL variable

@@ -25,7 +25,7 @@ repos:
 
   # The iOS repo contains a single Xcode project (App/LaLiga.xcodeproj) with two
   # app targets: LaClippers (FanApp) and LACStaff (StaffApp). We configure them as
-  # separate Atlas services using extractor_hints.project_root + extractor_hints.target
+  # separate Cortex services using extractor_hints.project_root + extractor_hints.target
   # so each gets its own scoped manifest.
 
   - name: fan-app-ios

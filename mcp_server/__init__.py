@@ -1,1 +1,1 @@
-"""Platform Atlas MCP server."""
+"""Platform Cortex MCP server."""
