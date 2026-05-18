@@ -84,6 +84,9 @@ atlas-output-*/
 # Swift Package Manager (iOS fixture build artifacts)
 tests/fixtures/sample-ios-repo/.build/
 
+# Gradle build cache
+**/.gradle/
+
 # Kilo tooling (plans, node_modules, etc.)
 .kilo/
 

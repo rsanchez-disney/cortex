@@ -7,7 +7,7 @@
         "uv",
         "run",
         "--directory",
-        "/Users/juan.saravia/projects/memory-hub",
+        "/Users/example-user/projects/memory-hub",
         "cortex",
         "mcp-server",
         "--mode",
