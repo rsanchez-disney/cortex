@@ -1,6 +1,6 @@
 """Storage backend abstraction — local filesystem and GCS.
 
-Factory pattern: StorageBackend.from_config(backend="local", bucket="/tmp/atlas-data")
+Factory pattern: StorageBackend.from_config(backend="local", bucket="/tmp/cortex-data")
 """
 
 from __future__ import annotations

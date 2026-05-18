@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://platform-atlas/schemas/service.schema.json",
+  "$id": "https://platform-cortex/schemas/service.schema.json",
   "title": "Service YAML Schema",
   "description": "Schema for service.yaml — the human-authored input to the extractor.",
   "type": "object",

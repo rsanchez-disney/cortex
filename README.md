@@ -1,10 +1,10 @@
-# Platform Atlas
+# Platform Cortex
 
 Structured architectural metadata extraction, aggregation, and MCP serving for cross-repo AI agent context.
 
-## What is Platform Atlas?
+## What is Platform Cortex?
 
-Platform Atlas extracts structured metadata from source repositories, aggregates it into a queryable graph, and exposes it to AI agents via an MCP server. It answers questions like:
+Platform Cortex extracts structured metadata from source repositories, aggregates it into a queryable graph, and exposes it to AI agents via an MCP server. It answers questions like:
 
 - "Which services are involved in the payment flow?"
 - "Does the backend expose a login endpoint?"
@@ -12,7 +12,7 @@ Platform Atlas extracts structured metadata from source repositories, aggregates
 
 ### Three components
 
-1. **Extractor** (`atlas` CLI) — Parses build files, manifests, and source code from each repo (using service metadata from the repos config) to produce normalized per-service metadata.
+1. **Extractor** (`cortex` CLI) — Parses build files, manifests, and source code from each repo (using service metadata from the repos config) to produce normalized per-service metadata.
 2. **Pipeline** — Azure DevOps scheduled job that runs extraction across all repos and writes results to cloud storage.
 3. **MCP Server** — Exposes 4 query tools over the aggregated graph for consumption by AI agents.
 
@@ -33,25 +33,25 @@ uv sync --extra ios --extra dev
 
 ### Local Development Workflow (Primary)
 
-The primary development workflow uses `atlas run-local` to run the full extract → aggregate → report pipeline locally.
+The primary development workflow uses `cortex run-local` to run the full extract → aggregate → report pipeline locally.
 
 #### 1. Smoke test with fixtures
 
 ```bash
 # Run against built-in test fixtures (no PAT needed)
-uv run atlas run-local --config config/repos-fixtures.yaml --output-dir ./atlas-output
+uv run cortex run-local --config config/repos-fixtures.yaml --output-dir ./cortex-output
 ```
 
 #### 2. Clone real repos and run locally (recommended)
 
-Use `atlas clone-repos` to shallow-clone all repos from `config/repos-real.yaml` into a local `.repos/` directory and auto-generate `config/repos-local.yaml` pointing at those clones:
+Use `cortex clone-repos` to shallow-clone all repos from `config/repos-real.yaml` into a local `.repos/` directory and auto-generate `config/repos-local.yaml` pointing at those clones:
 
 ```bash
 # Set your Azure DevOps PAT
 export AZURE_PAT=your-pat-here
 
 # Clone all repos and generate repos-local.yaml
-uv run atlas clone-repos
+uv run cortex clone-repos
 ```
 
 This will:
@@ -63,15 +63,15 @@ This will:
 Then run the pipeline against the local clones:
 
 ```bash
-uv run atlas run-local --config config/repos-local.yaml --output-dir ./atlas-output
+uv run cortex run-local --config config/repos-local.yaml --output-dir ./cortex-output
 ```
 
-To refresh clones (e.g. after upstream changes), re-run `atlas clone-repos` — existing clones are replaced with fresh shallow clones.
+To refresh clones (e.g. after upstream changes), re-run `cortex clone-repos` — existing clones are replaced with fresh shallow clones.
 
 **Custom options:**
 
 ```bash
-uv run atlas clone-repos \
+uv run cortex clone-repos \
   --config config/repos-real.yaml \
   --clone-dir .repos \
   --output-config config/repos-local.yaml
@@ -100,7 +100,7 @@ repos:
 ```
 
 ```bash
-uv run atlas run-local --config config/repos-local.yaml --output-dir ./atlas-output
+uv run cortex run-local --config config/repos-local.yaml --output-dir ./cortex-output
 ```
 
 #### 4. Clone from Azure DevOps URLs (inline)
@@ -119,31 +119,31 @@ repos:
 ```
 
 ```bash
-AZURE_PAT=your-pat-here uv run atlas run-local --config config/repos-local.yaml --output-dir ./atlas-output
+AZURE_PAT=your-pat-here uv run cortex run-local --config config/repos-local.yaml --output-dir ./cortex-output
 ```
 
 #### 5. Start MCP server locally
 
 ```bash
 # Point at the local pipeline output
-uv run atlas mcp-server --mode stdio --storage-backend local --storage-bucket ./atlas-output
+uv run cortex mcp-server --mode stdio --storage-backend local --storage-bucket ./cortex-output
 ```
 
 ### Individual Commands
 
 ```bash
 # Extract a single repo (all service metadata passed as CLI flags)
-uv run atlas extract \
+uv run cortex extract \
   --repo-path ./my-repo --repo-name my-repo \
   --storage-backend local --storage-bucket ./output \
   --type android --owner team-mobile --domain payments \
   --tier critical --purpose "Main banking app"
 
 # Aggregate all manifests into a graph
-uv run atlas aggregate --storage-backend local --storage-bucket ./output
+uv run cortex aggregate --storage-backend local --storage-bucket ./output
 
 # Generate a run report
-uv run atlas report --storage-backend local --storage-bucket ./output
+uv run cortex report --storage-backend local --storage-bucket ./output
 ```
 
 ## Architecture
@@ -153,10 +153,10 @@ Source repos
     │
     │  (scheduled or run-local)
     ▼
-atlas extract (per repo, parallel)
+cortex extract (per repo, parallel)
     │
     ▼
-atlas aggregate (once)
+cortex aggregate (once)
     │
     ▼
 Storage (local filesystem or GCS)
@@ -183,7 +183,7 @@ AI Agents
 
 1. Add an entry to `config/repos.yaml` (for pipeline) or `config/repos-local.yaml` (for local dev).
 2. Include all required service metadata fields inline in the config entry.
-3. Run `uv run atlas run-local` to verify extraction succeeds.
+3. Run `uv run cortex run-local` to verify extraction succeeds.
 
 ### Required Fields per Config Entry
 
@@ -259,7 +259,7 @@ Other backend extractors (Go, Node, React) are deferred.
 
 ### Variable Group
 
-Create a `platform-atlas-secrets` variable group linked to Azure Key Vault with:
+Create a `platform-cortex-secrets` variable group linked to Azure Key Vault with:
 
 - **`GIT_PAT`** — Read-only PAT for cloning source repos (same value as `AZURE_PAT` used locally).
 - **`STORAGE_CREDENTIALS`** — GCS service account JSON for writing to the storage bucket.
@@ -268,7 +268,7 @@ Create a `platform-atlas-secrets` variable group linked to Azure Key Vault with:
 
 The pipeline runs nightly at 3am UTC. To run manually:
 
-1. Go to Azure DevOps → Pipelines → Platform Atlas
+1. Go to Azure DevOps → Pipelines → Platform Cortex
 2. Click "Run pipeline"
 3. Optionally set `repoFilter` to extract a single repo
 4. Click "Run"
@@ -277,7 +277,7 @@ The pipeline runs nightly at 3am UTC. To run manually:
 
 | Context | Env Var | Source |
 |---|---|---|
-| Local (`atlas run-local`) | `AZURE_PAT` | Set manually in shell |
+| Local (`cortex run-local`) | `AZURE_PAT` | Set manually in shell |
 | Azure DevOps pipeline | `GIT_PAT` | Key Vault → variable group |
 
 Same PAT value, different injection mechanism. The extractor code never touches credentials — cloning is handled by `run-local` or the pipeline orchestration layer.
@@ -289,7 +289,7 @@ Same PAT value, different injection mechanism. The extractor code never touches 
 uv run pytest tests/ mcp_server/tests/ -v
 
 # Run with coverage
-uv run pytest --cov=atlas tests/ mcp_server/tests/ -v
+uv run pytest --cov=cortex tests/ mcp_server/tests/ -v
 
 # Run specific test file
 uv run pytest tests/test_android_extractor.py -v
@@ -311,8 +311,8 @@ uv run pytest tests/test_android_extractor.py -v
 
 ### MCP server returns empty results
 
-1. Verify `graph/latest.json` exists: `uv run atlas report --storage-backend local --storage-bucket ./atlas-output`
-2. Re-run the pipeline: `uv run atlas run-local --config config/repos-fixtures.yaml --output-dir ./atlas-output`
+1. Verify `graph/latest.json` exists: `uv run cortex report --storage-backend local --storage-bucket ./cortex-output`
+2. Re-run the pipeline: `uv run cortex run-local --config config/repos-fixtures.yaml --output-dir ./cortex-output`
 3. Restart the MCP server.
 
 ### AZURE_PAT errors
@@ -326,14 +326,14 @@ If you see `"AZURE_PAT environment variable required for cloning repo..."`:
 
 1. Verify the entry in `config/repos.yaml` or `config/repos-local.yaml` has all required fields.
 2. Ensure the `type` matches a registered extractor (`android`, `ios`, `backend-java`).
-3. Run `atlas run-local` and check for errors in the output.
+3. Run `cortex run-local` and check for errors in the output.
 
 ## Project Structure
 
 ```
 memory-hub/
 ├── pyproject.toml
-├── src/atlas/
+├── src/cortex/
 │   ├── cli.py              # CLI entry point (typer)
 │   ├── schema.py            # Pydantic models
 │   ├── validation.py        # Service metadata validation

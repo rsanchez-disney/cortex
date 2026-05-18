@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from atlas.extractors import ExtractorError, get_extractor
-from atlas.extractors.android import AndroidExtractor
-from atlas.extractors.backend_java import BackendJavaExtractor
-from atlas.extractors.ios import IOSExtractor
+from cortex.extractors import ExtractorError, get_extractor
+from cortex.extractors.android import AndroidExtractor
+from cortex.extractors.backend_java import BackendJavaExtractor
+from cortex.extractors.ios import IOSExtractor
 
 
 class TestGetExtractor:

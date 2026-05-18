@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from atlas.aggregator import (
+from cortex.aggregator import (
     _extract_topic_name,
     _normalize_path,
     _resolve_api_call_edges,
@@ -14,7 +14,7 @@ from atlas.aggregator import (
     _resolve_kafka_edges,
     aggregate,
 )
-from atlas.storage import LocalStorageBackend
+from cortex.storage import LocalStorageBackend
 
 
 @pytest.fixture
@@ -451,7 +451,7 @@ class TestApiCallEdgeResolution:
 
     def _make_graph_entry(self, name: str, svc_type: str, endpoints: list[dict]):
         """Build a GraphEntry for use in edge resolution."""
-        from atlas.aggregator import _manifest_to_graph_entry
+        from cortex.aggregator import _manifest_to_graph_entry
         manifest = _make_backend_manifest(name, endpoints)
         manifest["type"] = svc_type
         return _manifest_to_graph_entry(manifest)
@@ -623,7 +623,7 @@ class TestApiCallEdgeResolution:
             [{"method": "GET", "path": "/v1/foo", "interface_name": "FooApi"}],
         )
         # Only one service — the android app itself
-        from atlas.aggregator import _manifest_to_graph_entry
+        from cortex.aggregator import _manifest_to_graph_entry
         android_entry = _manifest_to_graph_entry(
             _make_mobile_manifest("my-android-app", "android", [])
         )

@@ -1,8 +1,8 @@
-# Platform Atlas — Release Distribution Plan
+# Platform Cortex — Release Distribution Plan
 
 ## Goal
 
-Distribute the `atlas` CLI as a pre-built Python wheel so that Azure Pipelines can install and run it **without any access to the source repository** (memory-hub on GitHub).
+Distribute the `cortex` CLI as a pre-built Python wheel so that Azure Pipelines can install and run it **without any access to the source repository** (memory-hub on GitHub).
 
 ---
 
@@ -13,7 +13,7 @@ Distribute the `atlas` CLI as a pre-built Python wheel so that Azure Pipelines c
 │  GitHub (private)        │         │  Azure Artifacts Feed    │         │  Azure Pipeline (agents) │
 │  memory-hub repo         │────────▶│  (private Python feed)   │◀────────│  Extraction / Aggregate  │
 │                          │  push   │                          │  pull   │                          │
-│  Source code lives here  │  .whl   │  atlas-X.Y.Z.whl         │  pip    │  pip install atlas       │
+│  Source code lives here  │  .whl   │  cortex-X.Y.Z.whl         │  pip    │  pip install cortex       │
 │  GitHub Actions build &  │         │  (+ transitive deps      │  install│  No repo access needed   │
 │  publish on git tags     │         │   from PyPI)             │         │                          │
 └─────────────────────────┘         └──────────────────────────┘         └──────────────────────────┘
@@ -32,14 +32,14 @@ Distribute the `atlas` CLI as a pre-built Python wheel so that Azure Pipelines c
 1. Go to your Azure DevOps organization: `https://dev.azure.com/YOUR_ORG`
 2. Navigate to **Artifacts** → **Create Feed**
 3. Settings:
-   - **Name:** `platform-atlas` (or choose any name — update configs below to match)
+   - **Name:** `platform-cortex` (or choose any name — update configs below to match)
    - **Visibility:** Private (organization-scoped)
    - **Upstream sources:** ✅ Enable (allows deps to be pulled from PyPI via the feed)
 4. Click **Create**
 
 > **Feed URL Pattern:**
-> - Upload endpoint: `https://pkgs.dev.azure.com/YOUR_ORG/_packaging/platform-atlas/pypi/upload/`
-> - Install index: `https://pkgs.dev.azure.com/YOUR_ORG/_packaging/platform-atlas/pypi/simple/`
+> - Upload endpoint: `https://pkgs.dev.azure.com/YOUR_ORG/_packaging/platform-cortex/pypi/upload/`
+> - Install index: `https://pkgs.dev.azure.com/YOUR_ORG/_packaging/platform-cortex/pypi/simple/`
 
 ---
 
@@ -48,7 +48,7 @@ Distribute the `atlas` CLI as a pre-built Python wheel so that Azure Pipelines c
 1. In Azure DevOps, click your profile icon → **Personal Access Tokens**
 2. Click **New Token**
 3. Settings:
-   - **Name:** `github-atlas-publish`
+   - **Name:** `github-cortex-publish`
    - **Expiration:** 1 year (set a calendar reminder to rotate)
    - **Scopes → Packaging:** ✅ Read & Write
 4. Copy the PAT immediately — it will not be shown again
@@ -60,9 +60,9 @@ Distribute the `atlas` CLI as a pre-built Python wheel so that Azure Pipelines c
 > If your pipeline agents already have implicit access to the Artifacts feed within the same org, you can skip this step and use the built-in `$(System.AccessToken)` instead.
 
 1. Create another PAT:
-   - **Name:** `pipeline-atlas-install`
+   - **Name:** `pipeline-cortex-install`
    - **Scopes → Packaging:** ✅ Read
-2. Store it in the `platform-atlas-secrets` Key Vault variable group (already referenced in the pipeline):
+2. Store it in the `platform-cortex-secrets` Key Vault variable group (already referenced in the pipeline):
    - Variable name: `AZURE_ARTIFACTS_PAT`
 
 ---
@@ -113,8 +113,8 @@ jobs:
 
       - name: Build wheel and sdist
         run: uv build
-        # Produces: dist/atlas-X.Y.Z-py3-none-any.whl
-        #           dist/atlas-X.Y.Z.tar.gz
+        # Produces: dist/cortex-X.Y.Z-py3-none-any.whl
+        #           dist/cortex-X.Y.Z.tar.gz
 
       - name: Verify build artifact
         run: |
@@ -126,7 +126,7 @@ jobs:
         env:
           AZURE_ARTIFACTS_PAT: ${{ secrets.AZURE_ARTIFACTS_PAT }}
           AZURE_ORG: YOUR_ORG          # ← Replace with your Azure DevOps org name
-          FEED_NAME: platform-atlas    # ← Replace if you used a different feed name
+          FEED_NAME: platform-cortex    # ← Replace if you used a different feed name
         run: |
           pip install twine
           twine upload \
@@ -153,7 +153,7 @@ For local development and one-off manual releases.
 .PHONY: build publish clean test
 
 AZURE_ORG    ?= YOUR_ORG          # Override: make publish AZURE_ORG=myorg
-FEED_NAME    ?= platform-atlas    # Override: make publish FEED_NAME=myfeed
+FEED_NAME    ?= platform-cortex    # Override: make publish FEED_NAME=myfeed
 
 # Build the wheel and sdist
 build:
@@ -198,7 +198,7 @@ clean:
 export AZURE_ARTIFACTS_PAT=your-pat-here
 
 # Full release (runs tests → builds → publishes)
-make publish AZURE_ORG=myorg FEED_NAME=platform-atlas
+make publish AZURE_ORG=myorg FEED_NAME=platform-cortex
 
 # Or build only (no publish)
 make build
@@ -208,7 +208,7 @@ make build
 
 ### Modified: `pipelines/azure-pipelines.yml` — Remove Source Checkout
 
-Replace `checkout: self` + `uv sync` with `pip install atlas` from the feed.
+Replace `checkout: self` + `uv sync` with `pip install cortex` from the feed.
 
 **Before (current):**
 ```yaml
@@ -237,11 +237,11 @@ steps:
     displayName: Use Python 3.12
 
   - script: |
-      pip install atlas \
+      pip install cortex \
         --index-url "https://pkgs.dev.azure.com/$(AZURE_ORG)/_packaging/$(FEED_NAME)/pypi/simple/" \
         --extra-index-url "https://pypi.org/simple/" \
         --extra-index-url "https://pypi.org/simple/"
-    displayName: Install atlas from Azure Artifacts
+    displayName: Install cortex from Azure Artifacts
     env:
       PIP_USERNAME: az
       PIP_PASSWORD: $(AZURE_ARTIFACTS_PAT)   # From Key Vault variable group
@@ -250,15 +250,15 @@ steps:
 Also add these to the pipeline `variables` section:
 ```yaml
 variables:
-  - group: platform-atlas-secrets    # Already exists — add AZURE_ARTIFACTS_PAT here
+  - group: platform-cortex-secrets    # Already exists — add AZURE_ARTIFACTS_PAT here
   - name: STORAGE_BACKEND
     value: gcs
   - name: STORAGE_BUCKET
-    value: platform-atlas-prod
+    value: platform-cortex-prod
   - name: AZURE_ORG
     value: YOUR_ORG                  # ← Replace with your org
   - name: FEED_NAME
-    value: platform-atlas            # ← Replace with your feed name
+    value: platform-cortex            # ← Replace with your feed name
 ```
 
 > **Note:** If the pipeline agents are in the same Azure DevOps org as the feed, you can use `$(System.AccessToken)` as the password instead of a separate PAT, which avoids PAT rotation entirely:
@@ -323,13 +323,13 @@ git push origin main --tags
 2. git tag v1.x.x && git push --tags
 3. GitHub Actions triggers:
    ├── Checkout source
-   ├── uv build (produces dist/atlas-1.x.x-py3-none-any.whl)
+   ├── uv build (produces dist/cortex-1.x.x-py3-none-any.whl)
    ├── twine upload → Azure Artifacts feed
    └── GitHub Release created with wheel attached
 4. Azure Pipelines (next nightly run):
    ├── checkout: none
-   ├── pip install atlas (from Azure Artifacts feed)
-   └── uv run atlas extract / aggregate / report
+   ├── pip install cortex (from Azure Artifacts feed)
+   └── uv run cortex extract / aggregate / report
 ```
 
 ### Manual Path (Hotfix or First Release)
@@ -337,13 +337,13 @@ git push origin main --tags
 ```bash
 # 1. Build
 export AZURE_ARTIFACTS_PAT=your-pat-here
-make build AZURE_ORG=myorg FEED_NAME=platform-atlas
+make build AZURE_ORG=myorg FEED_NAME=platform-cortex
 
 # 2. Inspect
-ls dist/   # atlas-1.0.0-py3-none-any.whl
+ls dist/   # cortex-1.0.0-py3-none-any.whl
 
 # 3. Publish
-make publish AZURE_ORG=myorg FEED_NAME=platform-atlas
+make publish AZURE_ORG=myorg FEED_NAME=platform-cortex
 ```
 
 ---
@@ -367,10 +367,10 @@ make publish AZURE_ORG=myorg FEED_NAME=platform-atlas
 - [ ] Azure Artifacts feed created and accessible
 - [ ] PAT for publishing stored in GitHub Actions secrets as `AZURE_ARTIFACTS_PAT`
 - [ ] PAT for installing stored in Azure Key Vault variable group
-- [ ] `make build` succeeds locally and produces `dist/atlas-*.whl`
+- [ ] `make build` succeeds locally and produces `dist/cortex-*.whl`
 - [ ] `make publish` successfully uploads the wheel to the feed
-- [ ] `pip install atlas --index-url https://pkgs.dev.azure.com/...` succeeds on a test machine
-- [ ] `atlas --version` or `atlas --help` works after `pip install`
+- [ ] `pip install cortex --index-url https://pkgs.dev.azure.com/...` succeeds on a test machine
+- [ ] `cortex --version` or `cortex --help` works after `pip install`
 - [ ] Tag `v1.0.0` pushed → GitHub Actions workflow triggers and succeeds
 - [ ] Azure Pipeline (test run) installs from feed with `checkout: none` successfully
 - [ ] Nightly pipeline runs without `checkout: self` and extractions succeed

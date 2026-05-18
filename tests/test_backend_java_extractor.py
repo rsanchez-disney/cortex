@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from atlas.extractors.backend_java import BackendJavaExtractor
-from atlas.schema import ServiceYaml
+from cortex.extractors.backend_java import BackendJavaExtractor
+from cortex.schema import ServiceYaml
 
 SAMPLE_BACKEND_JAVA_REPO = Path(__file__).parent / "fixtures" / "sample-backend-java-repo"
 

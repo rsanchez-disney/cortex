@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from atlas.cli import _clone_repo, _extract_service_data
+from cortex.cli import _clone_repo, _extract_service_data
 
 # ---------------------------------------------------------------------------
 # _extract_service_data
@@ -126,8 +126,8 @@ def _make_successful_run() -> MagicMock:
 def test_clone_repo_without_branch(mock_env_with_pat: None, tmp_path: Path) -> None:
     """When branch is not provided, --branch must NOT appear in the git command."""
     with (
-        patch("atlas.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
-        patch("atlas.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
     ):
         _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app")
 
@@ -141,8 +141,8 @@ def test_clone_repo_without_branch(mock_env_with_pat: None, tmp_path: Path) -> N
 def test_clone_repo_with_branch(mock_env_with_pat: None, tmp_path: Path) -> None:
     """When branch is provided, --branch <value> must appear in the git command."""
     with (
-        patch("atlas.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
-        patch("atlas.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
     ):
         _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app", branch="develop")
 
@@ -155,8 +155,8 @@ def test_clone_repo_with_branch(mock_env_with_pat: None, tmp_path: Path) -> None
 def test_clone_repo_none_branch_omits_flag(mock_env_with_pat: None, tmp_path: Path) -> None:
     """Passing branch=None explicitly is the same as omitting it — no --branch flag."""
     with (
-        patch("atlas.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
-        patch("atlas.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
     ):
         _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app", branch=None)
 
@@ -179,8 +179,8 @@ def test_clone_repo_git_failure_raises(mock_env_with_pat: None, tmp_path: Path) 
     mock_result.stderr = "repository not found"
 
     with (
-        patch("atlas.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
-        patch("atlas.cli.subprocess.run", return_value=mock_result),
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.subprocess.run", return_value=mock_result),
     ):
         with pytest.raises(RuntimeError, match="git clone failed"):
             _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app")
@@ -189,9 +189,9 @@ def test_clone_repo_git_failure_raises(mock_env_with_pat: None, tmp_path: Path) 
 def test_clone_repo_timeout_raises(mock_env_with_pat: None, tmp_path: Path) -> None:
     """A subprocess timeout must raise RuntimeError."""
     with (
-        patch("atlas.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
         patch(
-            "atlas.cli.subprocess.run",
+            "cortex.cli.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="git", timeout=120),
         ),
     ):
@@ -202,8 +202,8 @@ def test_clone_repo_timeout_raises(mock_env_with_pat: None, tmp_path: Path) -> N
 def test_clone_repo_injects_pat_into_azure_url(mock_env_with_pat: None, tmp_path: Path) -> None:
     """The PAT must be injected into the Azure DevOps URL."""
     with (
-        patch("atlas.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
-        patch("atlas.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
     ):
         _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app")
 
@@ -218,8 +218,8 @@ def test_clone_repo_strips_existing_user_from_azure_url(
 ) -> None:
     """An existing user@ prefix in the Azure URL must be stripped before PAT injection."""
     with (
-        patch("atlas.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
-        patch("atlas.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
     ):
         _clone_repo(
             "my-app",

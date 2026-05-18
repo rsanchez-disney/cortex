@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from atlas.extractors.ios import IOSExtractor
-from atlas.schema import ServiceYaml
+from cortex.extractors.ios import IOSExtractor
+from cortex.schema import ServiceYaml
 from tests.conftest import SAMPLE_IOS_REPO
 
 
@@ -625,7 +625,7 @@ class TestDatabaseTypeDetection:
 
     def test_realm_from_dependency(self, tmp_path: Path) -> None:
         """Realm dependency → database_type = 'realm'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         deps = [Dependency(name="realm-swift", version="10.45.0", source="Package.swift")]
         extractor = IOSExtractor()
         assert extractor._detect_database_type(deps, tmp_path) == "realm"
@@ -646,7 +646,7 @@ class TestDatabaseTypeDetection:
 
     def test_grdb_from_dependency(self, tmp_path: Path) -> None:
         """GRDB.swift dependency → database_type = 'sqlite'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         deps = [Dependency(name="GRDB.swift", version="6.0.0", source="Package.swift")]
         extractor = IOSExtractor()
         assert extractor._detect_database_type(deps, tmp_path) == "sqlite"
@@ -780,35 +780,35 @@ class TestDependencyCategorization:
 
     def test_networking_category(self) -> None:
         """Alamofire → category = 'networking'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         dep = Dependency(name="Alamofire", version="5.8.0", source="Package.swift")
         extractor = IOSExtractor()
         assert extractor._categorize_dependency(dep) == "networking"
 
     def test_database_category(self) -> None:
         """RealmSwift → category = 'database'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         dep = Dependency(name="RealmSwift", version="10.0", source="Podfile")
         extractor = IOSExtractor()
         assert extractor._categorize_dependency(dep) == "database"
 
     def test_analytics_category(self) -> None:
         """Firebase/Analytics → category = 'analytics'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         dep = Dependency(name="Firebase/Analytics", version="10.20.0", source="Podfile")
         extractor = IOSExtractor()
         assert extractor._categorize_dependency(dep) == "analytics"
 
     def test_ui_category(self) -> None:
         """Kingfisher → category = 'ui'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         dep = Dependency(name="Kingfisher", version="7.10.0", source="Package.swift")
         extractor = IOSExtractor()
         assert extractor._categorize_dependency(dep) == "ui"
 
     def test_unknown_dependency_no_category(self) -> None:
         """Unknown dependency → category = None."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         dep = Dependency(name="SomeCustomLib", version="1.0", source="Package.swift")
         extractor = IOSExtractor()
         assert extractor._categorize_dependency(dep) is None
@@ -833,14 +833,14 @@ class TestDependencyCategorization:
 
     def test_auth_category(self) -> None:
         """JWTDecode → category = 'auth'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         dep = Dependency(name="JWTDecode", version="3.0", source="Package.swift")
         extractor = IOSExtractor()
         assert extractor._categorize_dependency(dep) == "auth"
 
     def test_testing_category(self) -> None:
         """Quick → category = 'testing'."""
-        from atlas.schema import Dependency
+        from cortex.schema import Dependency
         dep = Dependency(name="Quick", version="7.0", source="Package.swift")
         extractor = IOSExtractor()
         assert extractor._categorize_dependency(dep) == "testing"

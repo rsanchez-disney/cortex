@@ -11,8 +11,8 @@ from datetime import UTC, datetime
 
 import structlog
 
-from atlas import __version__
-from atlas.schema import (
+from cortex import __version__
+from cortex.schema import (
     CommunicationGraph,
     EndpointIndex,
     ExtractionError,
@@ -21,7 +21,7 @@ from atlas.schema import (
     PlatformGraph,
     ServiceEdge,
 )
-from atlas.storage import StorageBackend, StorageError
+from cortex.storage import StorageBackend, StorageError
 
 logger = structlog.get_logger()
 
@@ -241,7 +241,7 @@ def _resolve_kafka_edges(manifests: list[dict]) -> list[ServiceEdge]:
         producers = topic_producers.get(topic, [])
         consumers = topic_consumers.get(topic, [])
 
-        # Only create edges when both sides are known within Atlas-tracked services
+        # Only create edges when both sides are known within Cortex-tracked services
         for producer in producers:
             for consumer in consumers:
                 edges.append(

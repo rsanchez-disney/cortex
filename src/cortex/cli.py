@@ -1,6 +1,6 @@
-"""Platform Atlas CLI — extract, aggregate, report, run-local, mcp-server.
+"""Platform Cortex CLI — extract, aggregate, report, run-local, mcp-server.
 
-Entry point: `atlas = "atlas.cli:app"`
+Entry point: `cortex = "cortex.cli:app"`
 """
 
 from __future__ import annotations
@@ -17,17 +17,17 @@ import structlog
 import typer
 import yaml
 
-from atlas.extractors import ExtractorError, get_extractor
-from atlas.repo_cloner import inject_pat
-from atlas.schema import ExtractionError
-from atlas.storage import StorageBackend, StorageError
-from atlas.validation import ValidationError, validate_service_yaml
+from cortex.extractors import ExtractorError, get_extractor
+from cortex.repo_cloner import inject_pat
+from cortex.schema import ExtractionError
+from cortex.storage import StorageBackend, StorageError
+from cortex.validation import ValidationError, validate_service_yaml
 
 logger = structlog.get_logger()
 
 app = typer.Typer(
-    name="atlas",
-    help="Platform Atlas: structured architectural metadata extraction and serving.",
+    name="cortex",
+    help="Platform Cortex: structured architectural metadata extraction and serving.",
     no_args_is_help=True,
 )
 
@@ -132,7 +132,7 @@ def aggregate(
     storage_bucket: str = typer.Option(..., help="Storage bucket or directory path"),
 ) -> None:
     """Aggregate all service manifests into a platform graph."""
-    from atlas.aggregator import aggregate as run_aggregate
+    from cortex.aggregator import aggregate as run_aggregate
 
     storage = StorageBackend.from_config(storage_backend, storage_bucket)
     graph = run_aggregate(storage)
@@ -162,7 +162,7 @@ def report(
     try:
         graph_data = storage.read_json("graph/latest.json")
     except StorageError:
-        typer.echo("FAIL: No graph/latest.json found. Run 'atlas aggregate' first.", err=True)
+        typer.echo("FAIL: No graph/latest.json found. Run 'cortex aggregate' first.", err=True)
         raise typer.Exit(code=1)
 
     services = graph_data.get("services", [])
@@ -171,7 +171,7 @@ def report(
 
     total = len(services) + len(failures)
     typer.echo("=" * 60)
-    typer.echo("Platform Atlas — Run Report")
+    typer.echo("Platform Cortex — Run Report")
     typer.echo("=" * 60)
     typer.echo(f"  Total repos:             {total}")
     typer.echo(f"  Successful extractions:  {len(services)}")
@@ -221,14 +221,14 @@ def run_local(
         None, help="Single repo path (alternative to --config)"
     ),
     repo_name: str | None = typer.Option(None, help="Single repo name (used with --repo-path)"),
-    output_dir: Path = typer.Option("./atlas-output", help="Output directory for local storage"),
+    output_dir: Path = typer.Option("./cortex-output", help="Output directory for local storage"),
 ) -> None:
     """Run the full extract->aggregate->report pipeline locally.
 
     Supports both local paths and remote URLs in the config YAML.
     For URL entries, set the AZURE_PAT environment variable.
     """
-    from atlas.aggregator import aggregate as run_aggregate
+    from cortex.aggregator import aggregate as run_aggregate
 
     storage = StorageBackend.from_config("local", str(output_dir))
 
@@ -388,7 +388,7 @@ def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, s
             f"Set it or use a local 'path' instead."
         )
 
-    clone_dir = tempfile.mkdtemp(prefix=f"atlas-clone-{name}-")
+    clone_dir = tempfile.mkdtemp(prefix=f"cortex-clone-{name}-")
     clone_path = Path(clone_dir) / name
 
     auth_url = inject_pat(url, azure_pat)
@@ -434,7 +434,7 @@ def clone_repos_cmd(
 
     Requires the AZURE_PAT environment variable for Azure DevOps URLs.
     """
-    from atlas.repo_cloner import clone_repos, generate_local_config
+    from cortex.repo_cloner import clone_repos, generate_local_config
 
     # Load config
     repos = _load_repos_config(config)
@@ -523,7 +523,7 @@ def mcp_server(
 
 @app.callback()
 def main() -> None:
-    """Platform Atlas — structured architectural metadata for AI agents."""
+    """Platform Cortex — structured architectural metadata for AI agents."""
     pass
 
 

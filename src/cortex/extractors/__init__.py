@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from atlas.extractors.base import Extractor
+    from cortex.extractors.base import Extractor
 
 
 class ExtractorError(Exception):
@@ -22,9 +22,9 @@ def get_extractor(service_type: str) -> Extractor:
         ExtractorError: if no extractor is registered for the type
     """
     # Lazy imports to avoid circular dependencies
-    from atlas.extractors.android import AndroidExtractor
-    from atlas.extractors.backend_java import BackendJavaExtractor
-    from atlas.extractors.ios import IOSExtractor
+    from cortex.extractors.android import AndroidExtractor
+    from cortex.extractors.backend_java import BackendJavaExtractor
+    from cortex.extractors.ios import IOSExtractor
 
     registry: dict[str, type[Extractor]] = {
         "android": AndroidExtractor,

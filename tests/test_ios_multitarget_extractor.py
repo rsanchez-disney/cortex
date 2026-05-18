@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from atlas.extractors.ios import IOSExtractor
-from atlas.schema import ExtractorHints, ServiceYaml
+from cortex.extractors.ios import IOSExtractor
+from cortex.schema import ExtractorHints, ServiceYaml
 from tests.conftest import SAMPLE_IOS_MULTITARGET_REPO
 
 # The fixture has:

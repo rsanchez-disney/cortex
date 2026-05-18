@@ -24,9 +24,9 @@ from pathlib import Path
 
 import structlog
 
-from atlas import __version__
-from atlas.extractors.base import Extractor
-from atlas.schema import (
+from cortex import __version__
+from cortex.extractors.base import Extractor
+from cortex.schema import (
     ApiCall,
     ApiContract,
     Dependency,

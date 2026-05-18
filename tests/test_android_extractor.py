@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from atlas.extractors.android import AndroidExtractor
-from atlas.schema import ServiceYaml
+from cortex.extractors.android import AndroidExtractor
+from cortex.schema import ServiceYaml
 from tests.conftest import SAMPLE_ANDROID_REPO
 
 
@@ -899,7 +899,7 @@ class TestSourceRepoDetection:
         """Captures URL and commit when git commands succeed."""
         extractor = AndroidExtractor()
 
-        with patch("atlas.extractors.base.subprocess.run") as mock_run:
+        with patch("cortex.extractors.base.subprocess.run") as mock_run:
             mock_url = MagicMock()
             mock_url.returncode = 0
             mock_url.stdout = "git@github.com:org/repo.git\n"
@@ -922,7 +922,7 @@ class TestSourceRepoDetection:
 
         extractor = AndroidExtractor()
 
-        with patch("atlas.extractors.base.subprocess.run") as mock_run:
+        with patch("cortex.extractors.base.subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired("git", 10)
             result = extractor._get_source_repo(tmp_path)
 
@@ -932,7 +932,7 @@ class TestSourceRepoDetection:
         """Returns None when git is not installed (FileNotFoundError)."""
         extractor = AndroidExtractor()
 
-        with patch("atlas.extractors.base.subprocess.run") as mock_run:
+        with patch("cortex.extractors.base.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError("git not found")
             result = extractor._get_source_repo(tmp_path)
 
@@ -942,7 +942,7 @@ class TestSourceRepoDetection:
         """Returns SourceRepo with available info when one command fails."""
         extractor = AndroidExtractor()
 
-        with patch("atlas.extractors.base.subprocess.run") as mock_run:
+        with patch("cortex.extractors.base.subprocess.run") as mock_run:
             mock_url = MagicMock()
             mock_url.returncode = 128  # git error — not a git repo
             mock_url.stdout = ""

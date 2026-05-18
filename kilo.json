@@ -1,29 +1,29 @@
 {
   "$schema": "https://app.kilo.ai/config.json",
   "mcp": {
-    "atlas": {
+    "cortex": {
       "type": "local",
       "command": [
         "uv",
         "run",
         "--directory",
         "/Users/juan.saravia/projects/memory-hub",
-        "atlas",
+        "cortex",
         "mcp-server",
         "--mode",
         "stdio",
         "--storage-backend",
         "local",
         "--storage-bucket",
-        "./atlas-output"
+        "./cortex-output"
       ],
       "enabled": true
     }
   },
   "permission": {
-    "atlas_find_relevant_services": "allow",
-    "atlas_get_service_context": "allow",
-    "atlas_list_endpoints": "allow",
-    "atlas_get_endpoint_contract": "allow"
+    "cortex_find_relevant_services": "allow",
+    "cortex_get_service_context": "allow",
+    "cortex_list_endpoints": "allow",
+    "cortex_get_endpoint_contract": "allow"
   }
 }

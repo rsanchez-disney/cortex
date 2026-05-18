@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from atlas.storage import LocalStorageBackend, StorageBackend, StorageError
+from cortex.storage import LocalStorageBackend, StorageBackend, StorageError
 
 
 class TestLocalStorageBackend:

@@ -12,7 +12,7 @@ from pathlib import Path
 import jsonschema
 from pydantic import ValidationError as PydanticValidationError
 
-from atlas.schema import ServiceYaml
+from cortex.schema import ServiceYaml
 
 # Path to the JSON schema file
 _SCHEMA_DIR = Path(__file__).parent.parent.parent / "schemas"

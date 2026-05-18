@@ -1,8 +1,8 @@
-# AGENTS.md — Platform Atlas
+# AGENTS.md — Platform Cortex
 
 ## What This Project Is
 
-Platform Atlas extracts structured architectural metadata from Android, iOS, and backend Java (Spring Boot) repositories, aggregates it into a queryable graph, and exposes it to AI agents via an MCP server. It is a Python CLI tool (`atlas`) with a separate MCP server component.
+Platform Cortex extracts structured architectural metadata from Android, iOS, and backend Java (Spring Boot) repositories, aggregates it into a queryable graph, and exposes it to AI agents via an MCP server. It is a Python CLI tool (`cortex`) with a separate MCP server component.
 
 ## Setup
 
@@ -14,13 +14,13 @@ uv sync --extra dev
 uv sync --extra ios --extra dev
 ```
 
-The CLI entry point is `atlas` (defined in `pyproject.toml` as `atlas.cli:app`). Always run via `uv run atlas ...`.
+The CLI entry point is `cortex` (defined in `pyproject.toml` as `cortex.cli:app`). Always run via `uv run cortex ...`.
 
 ## Project Structure
 
 ```
 memory-hub/
-├── src/atlas/                  # Core package
+├── src/cortex/                  # Core package
 │   ├── cli.py                  # CLI commands (typer)
 │   ├── schema.py               # Pydantic v2 models (ServiceYaml, ServiceManifest, PlatformGraph, etc.)
 │   ├── validation.py           # Service metadata validation (JSON Schema + Pydantic)
@@ -64,10 +64,10 @@ Run these commands from the project root to verify changes:
 uv run pytest tests/ mcp_server/tests/ -v
 
 # 2. Run with coverage (must stay above 75%)
-uv run pytest --cov=atlas tests/ mcp_server/tests/ -v
+uv run pytest --cov=cortex tests/ mcp_server/tests/ -v
 
 # 3. End-to-end smoke test — runs extract → aggregate → report against fixtures
-uv run atlas run-local --config config/repos-fixtures.yaml --output-dir /tmp/atlas-smoke
+uv run cortex run-local --config config/repos-fixtures.yaml --output-dir /tmp/cortex-smoke
 
 # 4. Lint
 uv run ruff check src/ tests/ mcp_server/
@@ -82,7 +82,7 @@ uv run pytest tests/test_backend_java_extractor.py -v
 
 ## Key Design Decisions
 
-1. **No auto-detection (`detect.py` does not exist).** The `type` field in the repos config is the sole source of truth for repo type. The extractor registry in `src/atlas/extractors/__init__.py` maps type → extractor class. If a type has no registered extractor, extraction fails with a clear error.
+1. **No auto-detection (`detect.py` does not exist).** The `type` field in the repos config is the sole source of truth for repo type. The extractor registry in `src/cortex/extractors/__init__.py` maps type → extractor class. If a type has no registered extractor, extraction fails with a clear error.
 
 2. **No Go extractor.** `android`, `ios`, and `backend-java` (Spring Boot) extractors are implemented. Other backend types (Go, Node, React) are deferred.
 
@@ -98,28 +98,28 @@ uv run pytest tests/test_backend_java_extractor.py -v
 
 ```bash
 # Extract a single repo (all service metadata passed as CLI flags)
-uv run atlas extract \
+uv run cortex extract \
   --repo-path PATH --repo-name NAME \
   --storage-backend local --storage-bucket DIR \
   --type android --owner team-mobile --domain payments \
   --tier critical --purpose "Main banking app"
 
 # Aggregate all manifests into graph
-uv run atlas aggregate --storage-backend local --storage-bucket DIR
+uv run cortex aggregate --storage-backend local --storage-bucket DIR
 
 # Print run report
-uv run atlas report --storage-backend local --storage-bucket DIR
+uv run cortex report --storage-backend local --storage-bucket DIR
 
 # Run full pipeline locally (extract all → aggregate → report)
-uv run atlas run-local --config config/repos-fixtures.yaml --output-dir ./atlas-output
+uv run cortex run-local --config config/repos-fixtures.yaml --output-dir ./cortex-output
 
 # Start MCP server (stdio mode)
-uv run atlas mcp-server --mode stdio --storage-backend local --storage-bucket ./atlas-output
+uv run cortex mcp-server --mode stdio --storage-backend local --storage-bucket ./cortex-output
 ```
 
 ## How `run-local` Works
 
-The `atlas run-local` command reads all service metadata from the repos config YAML. No `service.yaml` is required in target repos.
+The `cortex run-local` command reads all service metadata from the repos config YAML. No `service.yaml` is required in target repos.
 
 ```yaml
 repos:
@@ -160,8 +160,8 @@ repos:
 
 ## How to Add a New Extractor
 
-1. Create `src/atlas/extractors/{type}.py` implementing the `Extractor` base class from `base.py`.
-2. Register it in `src/atlas/extractors/__init__.py` by adding to the `registry` dict.
+1. Create `src/cortex/extractors/{type}.py` implementing the `Extractor` base class from `base.py`.
+2. Register it in `src/cortex/extractors/__init__.py` by adding to the `registry` dict.
 3. Create a test fixture in `tests/fixtures/sample-{type}-repo/` with realistic repo contents.
 4. Write tests in `tests/test_{type}_extractor.py`.
 5. Add a sample entry to `config/repos-fixtures.yaml` with the new type's metadata.
@@ -184,7 +184,7 @@ repos:
 
 - `schemas/service.schema.json` — Defines the contract for service metadata (reference)
 - `schemas/manifest.schema.json` — Defines the contract for `manifest.json` (output)
-- `src/atlas/schema.py` — Pydantic v2 models matching both schemas. Key models:
+- `src/cortex/schema.py` — Pydantic v2 models matching both schemas. Key models:
   - `ServiceYaml` — validated service metadata (sourced from repos config, not a file)
   - `ServiceManifest` — extractor output (includes backend-Java-specific fields like `spring_boot_version`, `java_version`, `kafka_topics`, `outbound_calls`, `api_calls`, etc.)
   - `PlatformGraph` — aggregated graph
@@ -197,10 +197,10 @@ When modifying schemas, update **both** the JSON Schema file and the correspondi
 
 ## Storage Layout
 
-After running `atlas run-local`, the output directory contains:
+After running `cortex run-local`, the output directory contains:
 
 ```
-atlas-output/
+cortex-output/
 ├── graph/
 │   ├── latest.json              # Aggregated graph (the index)
 │   └── {timestamp}.json         # Timestamped snapshots

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from atlas.validation import ValidationError, validate_service_yaml
+from cortex.validation import ValidationError, validate_service_yaml
 
 # Minimal valid service metadata dict
 _VALID_BASE = {

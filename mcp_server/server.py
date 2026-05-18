@@ -1,4 +1,4 @@
-"""Platform Atlas MCP server — exposes 4 tools for querying the platform graph.
+"""Platform Cortex MCP server — exposes 4 tools for querying the platform graph.
 
 Tools:
 1. find_relevant_services — keyword-based service discovery
@@ -20,7 +20,7 @@ from typing import Any
 import structlog
 from mcp.server.fastmcp import FastMCP
 
-from atlas.storage import StorageBackend, StorageError
+from cortex.storage import StorageBackend, StorageError
 
 logger = structlog.get_logger()
 
@@ -159,8 +159,8 @@ STOP_WORDS = frozenset(
 )
 
 
-class AtlasMCPServer:
-    """The Atlas MCP server, wrapping a FastMCP instance."""
+class CortexMCPServer:
+    """The Cortex MCP server, wrapping a FastMCP instance."""
 
     def __init__(self, storage: StorageBackend, refresh_interval_minutes: int = 15):
         self._storage = storage
@@ -169,7 +169,7 @@ class AtlasMCPServer:
         self._manifest_cache: dict[str, tuple[dict, float]] = {}  # name -> (data, expiry)
         self._cache_ttl = 3600  # 1 hour
 
-        self._mcp = FastMCP("Platform Atlas")
+        self._mcp = FastMCP("Platform Cortex")
         self._register_tools()
 
     def _register_tools(self) -> None:
@@ -604,12 +604,12 @@ class AtlasMCPServer:
 
 def create_server(
     storage_backend: str = "local",
-    storage_bucket: str = "./atlas-output",
+    storage_bucket: str = "./cortex-output",
     refresh_interval_minutes: int = 15,
-) -> AtlasMCPServer:
-    """Create and return an AtlasMCPServer instance."""
+) -> CortexMCPServer:
+    """Create and return a CortexMCPServer instance."""
     storage = StorageBackend.from_config(storage_backend, storage_bucket)
-    return AtlasMCPServer(
+    return CortexMCPServer(
         storage=storage,
         refresh_interval_minutes=refresh_interval_minutes,
     )

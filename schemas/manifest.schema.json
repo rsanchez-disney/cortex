@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://platform-atlas/schemas/manifest.schema.json",
+  "$id": "https://platform-cortex/schemas/manifest.schema.json",
   "title": "Service Manifest Schema",
   "description": "Schema for the normalized per-service manifest output by the extractor.",
   "type": "object",

@@ -7,7 +7,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from atlas.schema import ApiContract, ServiceManifest, ServiceYaml, SourceRepo
+from cortex.schema import ApiContract, ServiceManifest, ServiceYaml, SourceRepo
 
 
 class Extractor(ABC):

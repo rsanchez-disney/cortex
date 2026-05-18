@@ -1,4 +1,4 @@
-# Platform Atlas — Nightly extraction pipeline
+# Platform Cortex — Nightly extraction pipeline
 # Runs extraction across all registered repos, aggregates into graph, reports.
 
 schedules:
@@ -22,11 +22,11 @@ parameters:
     default: false
 
 variables:
-  - group: platform-atlas-secrets    # Key Vault: GIT_PAT, STORAGE_CREDENTIALS
+  - group: platform-cortex-secrets    # Key Vault: GIT_PAT, STORAGE_CREDENTIALS
   - name: STORAGE_BACKEND
     value: gcs
   - name: STORAGE_BUCKET
-    value: platform-atlas-prod
+    value: platform-cortex-prod
 
 jobs:
   - job: extract
@@ -72,7 +72,7 @@ jobs:
           GIT_PASSWORD: $(GIT_PAT)     # From Key Vault via variable group
 
       - script: |
-          uv run atlas extract \
+          uv run cortex extract \
             --repo-path /tmp/target \
             --repo-name $(repoName) \
             --storage-backend $(STORAGE_BACKEND) \
@@ -93,7 +93,7 @@ jobs:
         displayName: Install dependencies
 
       - script: |
-          uv run atlas aggregate \
+          uv run cortex aggregate \
             --storage-backend $(STORAGE_BACKEND) \
             --storage-bucket $(STORAGE_BUCKET)
         displayName: Aggregate into graph
@@ -112,7 +112,7 @@ jobs:
         displayName: Install dependencies
 
       - script: |
-          uv run atlas report \
+          uv run cortex report \
             --storage-backend $(STORAGE_BACKEND) \
             --storage-bucket $(STORAGE_BUCKET)
         displayName: Report summary

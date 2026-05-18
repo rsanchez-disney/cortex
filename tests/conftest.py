@@ -1,4 +1,4 @@
-"""Shared fixtures for Platform Atlas tests."""
+"""Shared fixtures for Platform Cortex tests."""
 
 from __future__ import annotations
 
@@ -34,4 +34,4 @@ def backend_java_repo_path() -> Path:
 @pytest.fixture
 def tmp_storage(tmp_path: Path) -> Path:
     """Temporary directory for storage backend tests."""
-    return tmp_path / "atlas-storage"
+    return tmp_path / "cortex-storage"
