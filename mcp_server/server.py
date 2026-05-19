@@ -465,10 +465,12 @@ class CortexMCPServer:
                     "spec_available": True,
                 }
             except StorageError:
-                # Get integration notes and swagger_url for this endpoint
+                # Get integration notes, swagger_url, and extracted endpoint
+                # contract data from the manifest
                 manifest = await self._get_manifest(service)
                 notes = []
                 swagger_url = None
+                endpoint_contract: dict[str, Any] | None = None
                 if manifest:
                     swagger_url = manifest.get("swagger_url")
                     for n in manifest.get("integration_notes", []):
@@ -476,19 +478,62 @@ class CortexMCPServer:
                         if scope == f"{method} {path}" or scope == "global":
                             notes.append(n["note"])
 
+                    # Look up extracted parameter/body/response data from
+                    # api_contracts in the manifest
+                    for contract in manifest.get("api_contracts", []):
+                        for ep in contract.get("endpoints", []):
+                            ep_method = (ep.get("method") or "").upper()
+                            ep_path = ep.get("path") or ""
+                            if ep_method == method.upper() and ep_path == path:
+                                endpoint_contract = {
+                                    "parameters": ep.get("parameters", []),
+                                    "request_body": ep.get("request_body"),
+                                    "response": ep.get("response"),
+                                }
+                                break
+                        if endpoint_contract:
+                            break
+
                 result = {
                     "service": service,
                     "method": method,
                     "path": path,
-                    "message": (
-                        f"Live Swagger/OpenAPI docs available at: {swagger_url}"
-                        if swagger_url
-                        else "No API spec file found for this service."
-                    ),
                     "integration_notes": notes,
                 }
-                if swagger_url:
+
+                if endpoint_contract:
+                    result["parameters"] = endpoint_contract["parameters"]
+                    result["request_body"] = endpoint_contract["request_body"]
+                    result["response"] = endpoint_contract["response"]
+                    result["message"] = (
+                        "Endpoint contract extracted from source code."
+                    )
+
+                    # Resolve DTO schemas for request/response types
+                    dto_schemas_map = manifest.get("dto_schemas", {}) if manifest else {}
+                    if dto_schemas_map:
+                        root_types: set[str] = set()
+                        req_body = endpoint_contract.get("request_body", {})
+                        if req_body and req_body.get("type"):
+                            for t in _GENERIC_TYPE_RE.findall(req_body["type"]):
+                                root_types.add(t)
+                        resp = endpoint_contract.get("response", {})
+                        if resp and resp.get("type"):
+                            for t in _GENERIC_TYPE_RE.findall(resp["type"]):
+                                root_types.add(t)
+                        resolved = _resolve_endpoint_schemas(dto_schemas_map, root_types)
+                        if resolved:
+                            result["schemas"] = resolved
+
+                elif swagger_url:
+                    result["message"] = (
+                        f"Live Swagger/OpenAPI docs available at: {swagger_url}"
+                    )
                     result["swagger_url"] = swagger_url
+                else:
+                    result["message"] = (
+                        "No API spec file found for this service."
+                    )
 
             await self._log_query(
                 "get_endpoint_contract",
@@ -687,6 +732,83 @@ def _find_service(graph: dict, name: str) -> dict | None:
         if svc.get("name") == name:
             return svc
     return None
+
+
+# --- DTO schema resolution ---
+
+_GENERIC_TYPE_RE = re.compile(r"[A-Z]\w+")
+_PRIMITIVE_TYPES = frozenset(
+    {
+        "String",
+        "int",
+        "Integer",
+        "long",
+        "Long",
+        "double",
+        "Double",
+        "float",
+        "Float",
+        "boolean",
+        "Boolean",
+        "byte",
+        "Byte",
+        "short",
+        "Short",
+        "char",
+        "Character",
+        "void",
+        "Void",
+        "BigDecimal",
+        "BigInteger",
+        "LocalDate",
+        "LocalDateTime",
+        "ZonedDateTime",
+        "Instant",
+        "UUID",
+        "Object",
+        "Map",
+        "Date",
+        "Timestamp",
+    }
+)
+
+
+def _resolve_endpoint_schemas(
+    dto_schemas: dict[str, dict],
+    root_types: set[str],
+    max_depth: int = 5,
+) -> dict[str, dict]:
+    """Collect DTO schemas transitively referenced by *root_types*.
+
+    Performs a breadth-first walk starting from the root type names,
+    following field types and parent references up to *max_depth* levels.
+    Primitive / well-known JDK types are skipped.
+    """
+    result: dict[str, dict] = {}
+    queue = list(root_types - _PRIMITIVE_TYPES)
+    depth = 0
+    while queue and depth < max_depth:
+        next_queue: list[str] = []
+        for type_name in queue:
+            if type_name in result or type_name in _PRIMITIVE_TYPES:
+                continue
+            schema = dto_schemas.get(type_name)
+            if schema is None:
+                continue
+            result[type_name] = schema
+            # Collect types referenced by fields
+            for field in schema.get("fields", []):
+                field_type = field.get("type", "")
+                for inner in _GENERIC_TYPE_RE.findall(field_type):
+                    if inner not in result and inner not in _PRIMITIVE_TYPES:
+                        next_queue.append(inner)
+            # Collect parent type if present
+            parent = schema.get("parent")
+            if parent and parent not in result and parent not in _PRIMITIVE_TYPES:
+                next_queue.append(parent)
+        queue = next_queue
+        depth += 1
+    return result
 
 
 

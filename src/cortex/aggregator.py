@@ -15,6 +15,9 @@ from cortex import __version__
 from cortex.schema import (
     CommunicationGraph,
     EndpointIndex,
+    EndpointParameter,
+    EndpointRequestBody,
+    EndpointResponse,
     ExtractionError,
     GraphEntry,
     GraphMetadata,
@@ -151,6 +154,15 @@ def _manifest_to_graph_entry(manifest: dict) -> GraphEntry:
     endpoints: list[EndpointIndex] = []
     for contract in manifest.get("api_contracts", []):
         for ep in contract.get("endpoints", []):
+            # Build parameter/request_body/response from raw dicts
+            params = [
+                EndpointParameter(**p) for p in ep.get("parameters", [])
+            ]
+            raw_body = ep.get("request_body")
+            req_body = EndpointRequestBody(**raw_body) if raw_body else None
+            raw_resp = ep.get("response")
+            resp = EndpointResponse(**raw_resp) if raw_resp else None
+
             endpoints.append(
                 EndpointIndex(
                     method=ep.get("method"),
@@ -158,6 +170,9 @@ def _manifest_to_graph_entry(manifest: dict) -> GraphEntry:
                     summary=ep.get("summary"),
                     tags=ep.get("tags", []),
                     operation_id=ep.get("operation_id"),
+                    parameters=params,
+                    request_body=req_body,
+                    response=resp,
                 )
             )
 

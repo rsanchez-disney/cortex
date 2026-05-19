@@ -4,6 +4,54 @@
   "title": "Service Manifest Schema",
   "description": "Schema for the normalized per-service manifest output by the extractor.",
   "type": "object",
+  "definitions": {
+    "DtoFieldConstraint": {
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string" },
+        "value": { "type": ["string", "null"] },
+        "min": { "type": ["integer", "null"] },
+        "max": { "type": ["integer", "null"] }
+      },
+      "required": ["kind"]
+    },
+    "DtoField": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "required": { "type": "boolean", "default": false },
+        "json_name": { "type": ["string", "null"] },
+        "constraints": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DtoFieldConstraint" },
+          "default": []
+        },
+        "description": { "type": ["string", "null"] }
+      },
+      "required": ["name", "type"]
+    },
+    "DtoSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "type": "string", "default": "class" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DtoField" },
+          "default": []
+        },
+        "enum_values": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "parent": { "type": ["string", "null"] },
+        "source_file": { "type": ["string", "null"] }
+      },
+      "required": ["name"]
+    }
+  },
   "required": ["name", "type", "owner", "domain", "tier", "purpose", "extracted_at", "extractor_version"],
   "properties": {
     "name": {
@@ -142,6 +190,11 @@
         "additionalProperties": false
       }
     },
+    "dto_schemas": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/DtoSchema" },
+      "default": {}
+    },
     "api_contracts": {
       "type": "array",
       "items": {
@@ -163,7 +216,40 @@
                   "type": "array",
                   "items": { "type": "string" }
                 },
-                "operation_id": { "type": "string" }
+                "operation_id": { "type": "string" },
+                "parameters": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "location"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "location": { "type": "string", "enum": ["query", "path", "header"] },
+                      "type": { "type": ["string", "null"] },
+                      "required": { "type": "boolean" },
+                      "default_value": { "type": ["string", "null"] }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "request_body": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "required": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                },
+                "response": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "wrapper": { "type": ["string", "null"] }
+                  },
+                  "additionalProperties": false
+                }
               },
               "additionalProperties": false
             }
@@ -271,7 +357,40 @@
                   "type": "array",
                   "items": { "type": "string" }
                 },
-                "operation_id": { "type": "string" }
+                "operation_id": { "type": "string" },
+                "parameters": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "location"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "location": { "type": "string", "enum": ["query", "path", "header"] },
+                      "type": { "type": ["string", "null"] },
+                      "required": { "type": "boolean" },
+                      "default_value": { "type": ["string", "null"] }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "request_body": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "required": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                },
+                "response": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "type": "string" },
+                    "wrapper": { "type": ["string", "null"] }
+                  },
+                  "additionalProperties": false
+                }
               },
               "additionalProperties": false
             }

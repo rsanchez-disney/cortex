@@ -29,7 +29,13 @@ from cortex.extractors.base import Extractor
 from cortex.schema import (
     ApiContract,
     Dependency,
+    DtoField,
+    DtoFieldConstraint,
+    DtoSchema,
     EndpointIndex,
+    EndpointParameter,
+    EndpointRequestBody,
+    EndpointResponse,
     EntryPoint,
     OutboundCall,
     RuntimeInfo,
@@ -63,8 +69,36 @@ _HTTP_METHODS = ["Get", "Post", "Put", "Delete", "Patch"]
 # Directories to exclude when counting source files
 _EXCLUDED_DIRS = {"build", "generated", ".gradle", "out", "target"}
 
+# Reactive/async wrapper types to unwrap from return types
+_RESPONSE_WRAPPERS = frozenset({
+    "ResponseEntity",
+    "Mono",
+    "Flux",
+    "CompletableFuture",
+    "DeferredResult",
+    "Callable",
+    "ListenableFuture",
+    "Future",
+})
+
 # Source directories that contain non-production code — excluded from entry point scanning
 _TEST_DIR_SEGMENTS = {"test", "androidTest", "integrationTest"}
+
+# Java/Kotlin primitive and standard library types — never try to resolve these as DTOs
+_PRIMITIVE_TYPES = frozenset({
+    "void", "Void", "boolean", "Boolean", "byte", "Byte", "short", "Short",
+    "int", "Integer", "long", "Long", "float", "Float", "double", "Double",
+    "char", "Character", "String", "BigDecimal", "BigInteger",
+    "Object", "Date", "LocalDate", "LocalDateTime", "LocalTime",
+    "Instant", "ZonedDateTime", "OffsetDateTime", "Duration", "Period",
+    "UUID", "URI", "URL", "Map", "List", "Set", "Collection",
+    "Optional", "?", "T", "E", "K", "V",
+    "MultipartFile", "HttpServletRequest", "HttpServletResponse",
+    "InputStream", "OutputStream", "byte[]",
+})
+
+# Maximum recursion depth for nested DTO resolution
+_MAX_DTO_DEPTH = 5
 
 # Pattern to identify URL-like config keys in YAML (base-url, base-uri, .url, etc.)
 # Matches keys ending with any of:
@@ -122,6 +156,7 @@ class BackendJavaExtractor(Extractor):
         runtime = self._detect_runtime(effective_root)
         ci = self._detect_ci(repo_path)
         source_repo = self._get_source_repo(repo_path)
+        dto_schemas = self._extract_dto_schemas(effective_root, api_contracts)
 
         return ServiceManifest(
             name=service_yaml.name,
@@ -141,6 +176,7 @@ class BackendJavaExtractor(Extractor):
             dependencies=dependencies,
             entry_points=entry_points,
             api_contracts=api_contracts,
+            dto_schemas=dto_schemas,
             runtime=runtime,
             ci=ci,
             spring_boot_version=spring_boot_version,
@@ -722,11 +758,29 @@ class BackendJavaExtractor(Extractor):
             # Combine base path + method path
             full_path = self._combine_paths(class_base_path, method_path)
 
+            # Extract method signature for parameter/body/response parsing
+            method_sig = self._extract_method_signature(post_window)
+            parameters = (
+                self._extract_parameters_from_signature(method_sig)
+                if method_sig else []
+            )
+            request_body = (
+                self._extract_request_body_from_signature(method_sig)
+                if method_sig else None
+            )
+            response = (
+                self._extract_return_type_from_signature(method_sig)
+                if method_sig else None
+            )
+
             endpoint = EndpointIndex(
                 method=http_verb,
                 path=full_path,
                 summary=summary,
                 tags=[tag] if tag else [],
+                parameters=parameters,
+                request_body=request_body,
+                response=response,
             )
             endpoints.append(endpoint)
 
@@ -976,6 +1030,324 @@ class BackendJavaExtractor(Extractor):
             method = "/" + method
 
         return base + method
+
+    def _extract_method_signature(self, text: str) -> str | None:
+        """Extract Java method signature from text following a @*Mapping annotation.
+
+        Returns the signature from return type through closing ')' of parameter list,
+        or None if no valid signature is found.
+        """
+        # Strategy: scan for the first '(' that's part of a method declaration (not an annotation)
+        # Then find the matching ')' using depth counting
+
+        # Find method declaration: look for pattern like "public Type method(" or "Type method("
+        # Skip annotation lines
+        m = re.search(
+            r'(?:(?:public|protected|private|default)\s+)?'  # optional access modifier
+            r'(?:static\s+)?'  # optional static
+            r'(?:final\s+)?'  # optional final
+            r'(?:synchronized\s+)?'  # optional synchronized
+            r'((?:[\w\.<>,\?\[\]\s]|(?:extends\s)|(?:super\s))+?)\s+'  # return type
+            r'(\w+)\s*\(',  # method name + opening paren
+            text,
+            re.DOTALL,
+        )
+        if not m:
+            return None
+
+        # Get the full match start (including modifiers)
+        paren_start = m.end() - 1  # position of '('
+
+        # Find matching ')' using depth counting
+        depth = 0
+        for i in range(paren_start, len(text)):
+            if text[i] == '(':
+                depth += 1
+            elif text[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    # Return from return type through ')'
+                    return text[m.start(1):i + 1].strip()
+
+        return None
+
+    def _split_params_respecting_generics(self, param_str: str) -> list[str]:
+        """Split comma-separated params respecting <> generic depth and () annotation depth."""
+        params: list[str] = []
+        angle_depth = 0
+        paren_depth = 0
+        in_string = False
+        current: list[str] = []
+        for i, ch in enumerate(param_str):
+            # Track string literals to avoid counting brackets inside strings
+            if ch == '"' and (i == 0 or param_str[i - 1] != '\\'):
+                in_string = not in_string
+                current.append(ch)
+            elif in_string:
+                current.append(ch)
+            elif ch == '<':
+                angle_depth += 1
+                current.append(ch)
+            elif ch == '>':
+                angle_depth -= 1
+                current.append(ch)
+            elif ch == '(':
+                paren_depth += 1
+                current.append(ch)
+            elif ch == ')':
+                paren_depth -= 1
+                current.append(ch)
+            elif ch == ',' and angle_depth == 0 and paren_depth == 0:
+                token = ''.join(current).strip()
+                if token:
+                    params.append(token)
+                current = []
+            else:
+                current.append(ch)
+        token = ''.join(current).strip()
+        if token:
+            params.append(token)
+        return params
+
+    def _extract_parameters_from_signature(self, signature: str) -> list[EndpointParameter]:
+        """Extract request parameters from Spring annotations in a method signature."""
+        # Extract just the parameter list (between parens)
+        paren_start = signature.find('(')
+        paren_end = signature.rfind(')')
+        if paren_start < 0 or paren_end < 0:
+            return []
+
+        param_str = signature[paren_start + 1:paren_end].strip()
+        if not param_str:
+            return []
+
+        params = self._split_params_respecting_generics(param_str)
+        result: list[EndpointParameter] = []
+
+        # Annotation pattern for @RequestParam, @PathVariable, @RequestHeader
+        annotation_re = re.compile(
+            r'@(RequestParam|PathVariable|RequestHeader)\b'
+        )
+
+        for param_token in params:
+            param_token = param_token.strip()
+            # Normalize whitespace (multi-line signatures)
+            param_token = re.sub(r'\s+', ' ', param_token)
+
+            m = annotation_re.search(param_token)
+            if not m:
+                continue  # Skip unannotated params (framework-injected)
+
+            ann_type = m.group(1)
+            location_map = {
+                'RequestParam': 'query',
+                'PathVariable': 'path',
+                'RequestHeader': 'header',
+            }
+            location = location_map[ann_type]
+
+            # Extract annotation attributes
+            ann_end = m.end()
+
+            # Check for annotation arguments: @RequestParam(...) or @RequestParam
+            attr_name: str | None = None
+            attr_required: bool | None = None
+            attr_default: str | None = None
+
+            rest_after_ann = param_token[ann_end:]
+            # Check if there are parenthesized attributes
+            paren_m = re.match(r'\s*\(([^)]*)\)', rest_after_ann)
+            if paren_m:
+                attrs_str = paren_m.group(1).strip()
+                # Check for named attributes: value="x", name="x",
+                # required=false, defaultValue="x"
+                attr_pat = r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|(\w+))'
+                for attr_m in re.finditer(attr_pat, attrs_str):
+                    attr_key = attr_m.group(1)
+                    attr_val = attr_m.group(2) or attr_m.group(3) or attr_m.group(4)
+                    if attr_key in ('value', 'name'):
+                        attr_name = attr_val
+                    elif attr_key == 'required':
+                        attr_required = attr_val.lower() == 'true'
+                    elif attr_key == 'defaultValue':
+                        attr_default = attr_val
+
+                # Check for positional string: @RequestParam("name")
+                if attr_name is None:
+                    pos_m = re.match(r'\s*"([^"]*)"', attrs_str)
+                    if not pos_m:
+                        pos_m = re.match(r"\s*'([^']*)'", attrs_str)
+                    if pos_m:
+                        attr_name = pos_m.group(1)
+
+                # Remove the annotation + attrs from the token to get type + name
+                remaining = param_token[:m.start()] + rest_after_ann[paren_m.end():]
+            else:
+                remaining = param_token[:m.start()] + rest_after_ann
+
+            # Also remove any other annotations (like @Valid, @NotNull, etc.)
+            remaining = re.sub(r'@\w+(?:\([^)]*\))?\s*', '', remaining).strip()
+
+            # Parse remaining as "Type paramName" or "Type... paramName"
+            remaining_tokens = remaining.split()
+            java_type: str | None = None
+            java_name: str | None = None
+
+            if len(remaining_tokens) >= 2:
+                java_name = remaining_tokens[-1]
+                java_type = ' '.join(remaining_tokens[:-1])
+                # Clean up varargs
+                if java_type.endswith('...'):
+                    java_type = java_type[:-3].strip() + '[]'
+            elif len(remaining_tokens) == 1:
+                java_name = remaining_tokens[0]
+
+            # Use annotation name if specified, otherwise Java param name
+            param_name = attr_name or java_name or 'unknown'
+
+            result.append(EndpointParameter(
+                name=param_name,
+                location=location,
+                type=java_type,
+                required=attr_required,
+                default_value=attr_default,
+            ))
+
+        return result
+
+    def _extract_request_body_from_signature(self, signature: str) -> EndpointRequestBody | None:
+        """Extract @RequestBody type from a method signature."""
+        paren_start = signature.find('(')
+        paren_end = signature.rfind(')')
+        if paren_start < 0 or paren_end < 0:
+            return None
+
+        param_str = signature[paren_start + 1:paren_end].strip()
+        if not param_str:
+            return None
+
+        params = self._split_params_respecting_generics(param_str)
+
+        for param_token in params:
+            param_token = re.sub(r'\s+', ' ', param_token.strip())
+
+            m = re.search(r'@RequestBody\b', param_token)
+            if not m:
+                continue
+
+            # Check for required attribute
+            required = True
+            rest = param_token[m.end():]
+            paren_m = re.match(r'\s*\(([^)]*)\)', rest)
+            if paren_m:
+                attrs_str = paren_m.group(1)
+                req_m = re.search(r'required\s*=\s*(\w+)', attrs_str)
+                if req_m:
+                    required = req_m.group(1).lower() != 'false'
+                rest = rest[paren_m.end():]
+
+            # Remove other annotations
+            remaining = param_token[:m.start()] + rest
+            remaining = re.sub(r'@\w+(?:\([^)]*\))?\s*', '', remaining).strip()
+
+            # Parse "Type paramName"
+            tokens = remaining.split()
+            if len(tokens) >= 2:
+                # Type is everything except the last token (param name)
+                body_type = ' '.join(tokens[:-1])
+                return EndpointRequestBody(type=body_type, required=required)
+            elif len(tokens) == 1:
+                return EndpointRequestBody(type=tokens[0], required=required)
+
+        return None
+
+    def _extract_return_type_from_signature(self, signature: str) -> EndpointResponse | None:
+        """Extract return type from a method signature and unwrap common wrappers."""
+        # The signature looks like: "ReturnType methodName(params)"
+        # Find the method name + opening paren
+        paren_pos = signature.find('(')
+        if paren_pos < 0:
+            return None
+
+        before_paren = signature[:paren_pos].strip()
+        # Remove access modifiers
+        before_paren = re.sub(
+            r'\b(?:public|protected|private|default|static|final|synchronized|abstract)\b\s*',
+            '', before_paren
+        ).strip()
+
+        # Now we have "ReturnType methodName"
+        # Split off the method name (last token, but must handle generics in return type)
+        # Find the last whitespace that's not inside <>
+        depth = 0
+        last_space = -1
+        for i, ch in enumerate(before_paren):
+            if ch == '<':
+                depth += 1
+            elif ch == '>':
+                depth -= 1
+            elif ch == ' ' and depth == 0:
+                last_space = i
+
+        if last_space < 0:
+            return None  # Can't separate return type from method name
+
+        return_type = before_paren[:last_space].strip()
+        if not return_type or return_type == 'void':
+            return EndpointResponse(type='void', wrapper=None) if return_type == 'void' else None
+
+        # Check if outer type is a known wrapper
+        wrapper, inner = self._unwrap_response_type(return_type)
+
+        return EndpointResponse(type=inner, wrapper=wrapper)
+
+    def _unwrap_response_type(self, type_str: str) -> tuple[str | None, str]:
+        """Unwrap response wrapper types like ResponseEntity<T>, Mono<T>, etc.
+
+        Returns (wrapper, inner_type). If no wrapper, returns (None, type_str).
+        Handles nested wrappers like Mono<ResponseEntity<T>> → ("Mono<ResponseEntity>", "T").
+        """
+        # Find the outer type name
+        angle_pos = type_str.find('<')
+        if angle_pos < 0:
+            # No generics — check if it's a wrapper type itself (e.g., just "ResponseEntity")
+            if type_str in _RESPONSE_WRAPPERS:
+                return (type_str, "?")
+            return (None, type_str)
+
+        outer = type_str[:angle_pos].strip()
+
+        if outer not in _RESPONSE_WRAPPERS:
+            return (None, type_str)
+
+        # Extract inner type (between first < and last >)
+        # Use depth counting for correctness
+        depth = 0
+        inner_start = angle_pos + 1
+        inner_end = len(type_str)
+        for i in range(angle_pos, len(type_str)):
+            if type_str[i] == '<':
+                depth += 1
+            elif type_str[i] == '>':
+                depth -= 1
+                if depth == 0:
+                    inner_end = i
+                    break
+
+        inner = type_str[inner_start:inner_end].strip()
+
+        # Check for nested wrapper: Mono<ResponseEntity<T>>
+        nested_angle = inner.find('<')
+        if nested_angle >= 0:
+            nested_outer = inner[:nested_angle].strip()
+            if nested_outer in _RESPONSE_WRAPPERS:
+                # Recursively unwrap
+                nested_wrapper, nested_inner = self._unwrap_response_type(inner)
+                # Combine wrappers: Mono<ResponseEntity>
+                combined_wrapper = f"{outer}<{nested_outer}>"
+                return (combined_wrapper, nested_inner)
+
+        return (outer, inner)
 
     def _parse_entry_points(self, root: Path) -> list[EntryPoint]:
         """Find Spring entry points.
@@ -1671,7 +2043,8 @@ class BackendJavaExtractor(Extractor):
                 r"appconfig\.azure",
                 r"app-configuration",
                 r"application-configuration",
-                r"^(?!https?://)[a-zA-Z][a-zA-Z0-9+\-.]+://",  # Custom-scheme URIs (e.g. intuitdome://, myapp://)
+                # Custom-scheme URIs (e.g. intuitdome://, myapp://)
+                r"^(?!https?://)[a-zA-Z][a-zA-Z0-9+\-.]+://",
             ]
         ]
 
@@ -2063,14 +2436,6 @@ class BackendJavaExtractor(Extractor):
             r'@Value\s*\(\s*["\'](\$\{[^}]+\})["\']'
             r'\s*\)\s*String\s+(\w+)',
         )
-        # Pattern for concatenated @Value: @Value("${" + CONST_NAME + "}")
-        # Matches the string-concatenation form used when the key is stored in a constant.
-        value_param_concat_pattern = re.compile(
-            r'@Value\s*\(\s*["\'][^"\']*\$\{[^"\']*["\']\s*\+\s*(\w+)\s*\+\s*["\'][^"\']*\}[^"\']*["\']\s*\)'
-            r'\s*\)\s*String\s+(\w+)'
-            r'|'
-            r'@Value\s*\(\s*"\$\{"\s*\+\s*(\w+)\s*\+\s*"\}"\s*\)\s*String\s+(\w+)',
-        )
         # Pattern to extract private static final String constants from the same file
         string_const_pattern = re.compile(
             r'(?:private|protected|public)\s+static\s+final\s+String\s+(\w+)\s*=\s*["\']([^"\']+)["\']',
@@ -2443,3 +2808,562 @@ class BackendJavaExtractor(Extractor):
         if (root / "Jenkinsfile").exists():
             return "jenkins"
         return None
+
+    # --- DTO Schema Extraction ---
+
+    def _extract_dto_schemas(
+        self, root: Path, api_contracts: list[ApiContract]
+    ) -> dict[str, DtoSchema]:
+        """Extract DTO schemas for all types referenced in API contracts.
+
+        1. Collect type names from request bodies and responses
+        2. Build class name → file path index
+        3. Parse each referenced class
+        4. Recursively resolve nested DTO types (up to _MAX_DTO_DEPTH)
+        """
+        # Step 1: Collect referenced type names
+        type_names = self._collect_dto_type_names(api_contracts)
+        if not type_names:
+            return {}
+
+        # Step 2: Build class index
+        class_index = self._build_class_index(root)
+
+        # Step 3 & 4: Parse classes with recursive resolution
+        schemas: dict[str, DtoSchema] = {}
+        self._resolve_dto_types(type_names, class_index, root, schemas, depth=0)
+
+        return schemas
+
+    def _resolve_dto_types(
+        self,
+        type_names: set[str],
+        class_index: dict[str, Path],
+        root: Path,
+        schemas: dict[str, DtoSchema],
+        depth: int,
+    ) -> None:
+        """Recursively resolve DTO types up to _MAX_DTO_DEPTH."""
+        if depth >= _MAX_DTO_DEPTH:
+            return
+
+        new_types: set[str] = set()
+
+        for name in type_names:
+            if name in schemas or name in _PRIMITIVE_TYPES:
+                continue
+
+            file_path = class_index.get(name)
+            if file_path is None:
+                logger.debug("DTO class not found in repo", class_name=name)
+                continue
+
+            schema = self._parse_java_class(file_path, root)
+            if schema is None:
+                continue
+
+            schemas[name] = schema
+
+            # Collect nested type references from fields
+            for field in schema.fields:
+                self._add_dto_type_names(field.type, new_types)
+
+            # Also resolve parent class
+            if schema.parent and schema.parent not in _PRIMITIVE_TYPES:
+                new_types.add(schema.parent)
+
+        # Remove already-resolved types
+        new_types -= set(schemas.keys())
+        new_types -= _PRIMITIVE_TYPES
+
+        if new_types:
+            self._resolve_dto_types(new_types, class_index, root, schemas, depth + 1)
+
+    def _build_class_index(self, root: Path) -> dict[str, Path]:
+        """Build a mapping of simple class name → source file path."""
+        index: dict[str, Path] = {}
+        for ext in ("*.java", "*.kt"):
+            for f in root.rglob(ext):
+                # Skip excluded directories
+                if any(part in _EXCLUDED_DIRS for part in f.parts):
+                    continue
+                # Skip test directories
+                if any(part in _TEST_DIR_SEGMENTS for part in f.parts):
+                    continue
+                # Extract class name from filename (ClassName.java → ClassName)
+                class_name = f.stem
+                if class_name not in index:
+                    index[class_name] = f
+        return index
+
+    def _collect_dto_type_names(self, api_contracts: list[ApiContract]) -> set[str]:
+        """Collect all DTO type names referenced in endpoint contracts."""
+        type_names: set[str] = set()
+        for contract in api_contracts:
+            for ep in contract.endpoints:
+                if ep.request_body and ep.request_body.type:
+                    self._add_dto_type_names(ep.request_body.type, type_names)
+                if ep.response and ep.response.type:
+                    self._add_dto_type_names(ep.response.type, type_names)
+        return type_names
+
+    def _add_dto_type_names(self, type_str: str, names: set[str]) -> None:
+        """Extract concrete DTO type names from a type string, stripping generics."""
+        # Handle generic types: List<OrderDto> → OrderDto
+        # Handle nested generics: Map<String, List<OrderDto>> → OrderDto
+        # Find all type names inside angle brackets
+        inner = re.findall(r'[A-Z]\w+', type_str)
+        for name in inner:
+            if name not in _PRIMITIVE_TYPES:
+                names.add(name)
+        # Also check the outer type itself
+        base = type_str.split('<')[0].strip()
+        if base and base[0].isupper() and base not in _PRIMITIVE_TYPES:
+            names.add(base)
+
+    def _parse_java_class(self, file_path: Path, root: Path) -> DtoSchema | None:
+        """Parse a Java/Kotlin source file to extract DTO schema."""
+        try:
+            content = file_path.read_text(errors="replace")
+        except Exception:
+            return None
+
+        class_name = file_path.stem
+        relative_path = str(file_path.relative_to(root))
+
+        # Detect kind and parent
+        kind, parent = self._detect_class_kind(content, class_name)
+        if kind is None:
+            return None
+
+        # Extract fields based on kind
+        if kind == "enum":
+            enum_values = self._extract_enum_values(content, class_name)
+            return DtoSchema(
+                name=class_name,
+                kind="enum",
+                enum_values=enum_values,
+                source_file=relative_path,
+            )
+
+        if kind == "record":
+            fields = self._extract_record_fields(content, class_name)
+        elif kind == "data_class":
+            fields = self._extract_kotlin_data_class_fields(content, class_name)
+        else:
+            # Regular class — extract from field declarations
+            fields = self._extract_class_fields(content, class_name)
+
+        return DtoSchema(
+            name=class_name,
+            kind=kind if kind != "data_class" else "class",
+            fields=fields,
+            parent=parent,
+            source_file=relative_path,
+        )
+
+    def _detect_class_kind(
+        self, content: str, class_name: str
+    ) -> tuple[str | None, str | None]:
+        """Detect class kind and parent class name.
+
+        Returns (kind, parent) where kind is one of:
+        "class", "record", "enum", "interface", "data_class", or None if not found.
+        """
+        # Java record: public record ClassName(...)
+        if re.search(rf'\brecord\s+{re.escape(class_name)}\s*\(', content):
+            return "record", None
+
+        # Kotlin data class: data class ClassName(...)
+        if re.search(rf'\bdata\s+class\s+{re.escape(class_name)}\s*\(', content):
+            return "data_class", None
+
+        # Java enum
+        if re.search(rf'\benum\s+{re.escape(class_name)}\b', content):
+            return "enum", None
+
+        # Java interface
+        if re.search(rf'\binterface\s+{re.escape(class_name)}\b', content):
+            return "interface", None
+
+        # Java class with optional extends
+        m = re.search(
+            rf'\bclass\s+{re.escape(class_name)}\b'
+            rf'(?:\s+extends\s+(\w+))?',
+            content,
+        )
+        if m:
+            parent = m.group(1)
+            return "class", parent
+
+        return None, None
+
+    def _extract_class_fields(
+        self, content: str, class_name: str
+    ) -> list[DtoField]:
+        """Extract fields from a Java class body.
+
+        Handles:
+        - private/protected/public Type fieldName;
+        - Annotations: @NotNull, @NotBlank, @NotEmpty, @JsonProperty, @JsonIgnore
+        - Annotations: @Size, @Min, @Max, @Pattern, @Email
+        - @Schema(description="...")
+        """
+        fields: list[DtoField] = []
+
+        # Find the class body — match from class declaration to end
+        # We need to find the opening brace of the class
+        class_pattern = re.compile(
+            rf'\bclass\s+{re.escape(class_name)}\b[^{{]*\{{',
+            re.DOTALL,
+        )
+        class_match = class_pattern.search(content)
+        if not class_match:
+            return fields
+
+        class_body_start = class_match.end()
+        # Find matching closing brace (track depth)
+        class_body = self._extract_brace_block(content, class_body_start)
+        if not class_body:
+            return fields
+
+        # Split into lines and process field declarations
+        # Pattern: optional annotations on preceding lines, then field declaration
+        lines = class_body.split('\n')
+        pending_annotations: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Collect annotations
+            if stripped.startswith('@'):
+                pending_annotations.append(stripped)
+                continue
+
+            # Try to match a field declaration
+            field = self._parse_field_declaration(stripped, pending_annotations)
+            if field:
+                fields.append(field)
+                pending_annotations = []
+            elif (
+                stripped
+                and not stripped.startswith('//')
+                and not stripped.startswith('/*')
+                and not stripped.startswith('*')
+            ):
+                # Non-annotation, non-field line — reset annotations
+                if not self._is_method_or_constructor(stripped, class_name):
+                    pass  # Could be inner class, etc.
+                pending_annotations = []
+
+        return fields
+
+    def _parse_field_declaration(
+        self, line: str, annotations: list[str]
+    ) -> DtoField | None:
+        """Parse a Java field declaration line into a DtoField.
+
+        Matches patterns like:
+            private String email;
+            private final List<String> items;
+            protected BigDecimal amount;
+            String name;  (package-private)
+        """
+        # Skip if it looks like a method, constructor, or class
+        if '(' in line and ')' in line:
+            return None
+        if line.startswith('class ') or line.startswith('interface ') or line.startswith('enum '):
+            return None
+        if line.startswith('return ') or line.startswith('if ') or line.startswith('for '):
+            return None
+
+        # Field pattern: [access] [static] [final] Type fieldName [= value];
+        field_pattern = re.compile(
+            r'^(?:(?:private|protected|public)\s+)?'
+            r'(?:static\s+)?'
+            r'(?:final\s+)?'
+            r'(?:transient\s+)?'
+            r'(?:volatile\s+)?'
+            r'([\w<>,\s\?]+?)\s+'  # Type (including generics)
+            r'(\w+)\s*'  # Field name
+            r'(?:=\s*[^;]*)?\s*;'  # Optional initializer
+        )
+        m = field_pattern.match(line)
+        if not m:
+            return None
+
+        field_type = m.group(1).strip()
+        field_name = m.group(2).strip()
+
+        # Skip static fields (constants)
+        if 'static ' in line and line.index('static') < line.index(field_name):
+            return None
+
+        # Check for @JsonIgnore
+        if any('@JsonIgnore' in a for a in annotations):
+            return None
+
+        # Determine required from annotations
+        required = any(
+            ann_name in a
+            for a in annotations
+            for ann_name in ('@NotNull', '@NotBlank', '@NotEmpty', '@NonNull')
+        )
+
+        # Check for @JsonProperty name override
+        json_name = None
+        for a in annotations:
+            jp_match = re.search(r'@JsonProperty\s*\(\s*["\'](\w+)["\']', a)
+            if jp_match:
+                json_name = jp_match.group(1)
+                break
+            jp_match = re.search(r'@JsonProperty\s*\(\s*value\s*=\s*["\'](\w+)["\']', a)
+            if jp_match:
+                json_name = jp_match.group(1)
+                break
+
+        # Extract description from @Schema
+        description = None
+        for a in annotations:
+            schema_match = re.search(r'@Schema\s*\([^)]*description\s*=\s*["\']([^"\']+)["\']', a)
+            if schema_match:
+                description = schema_match.group(1)
+                break
+
+        # Extract constraints
+        constraints = self._extract_field_constraints(annotations)
+
+        return DtoField(
+            name=field_name,
+            type=field_type,
+            required=required,
+            json_name=json_name,
+            constraints=constraints,
+            description=description,
+        )
+
+    def _extract_field_constraints(
+        self, annotations: list[str]
+    ) -> list[DtoFieldConstraint]:
+        """Extract validation constraints from field annotations."""
+        constraints: list[DtoFieldConstraint] = []
+
+        for a in annotations:
+            # @Size(min=1, max=100)
+            size_match = re.search(r'@Size\s*\(([^)]+)\)', a)
+            if size_match:
+                attrs = size_match.group(1)
+                c = DtoFieldConstraint(kind="size")
+                min_m = re.search(r'min\s*=\s*(\d+)', attrs)
+                max_m = re.search(r'max\s*=\s*(\d+)', attrs)
+                if min_m:
+                    c.min = int(min_m.group(1))
+                if max_m:
+                    c.max = int(max_m.group(1))
+                constraints.append(c)
+
+            # @Min(0)
+            min_match = re.search(r'@Min\s*\(\s*(\d+)\s*\)', a)
+            if min_match:
+                constraints.append(DtoFieldConstraint(kind="min", value=min_match.group(1)))
+
+            # @Max(1000)
+            max_match = re.search(r'@Max\s*\(\s*(\d+)\s*\)', a)
+            if max_match:
+                constraints.append(DtoFieldConstraint(kind="max", value=max_match.group(1)))
+
+            # @Pattern(regexp="...")
+            pattern_match = re.search(r'@Pattern\s*\([^)]*regexp\s*=\s*["\']([^"\']+)["\']', a)
+            if pattern_match:
+                constraints.append(DtoFieldConstraint(kind="pattern", value=pattern_match.group(1)))
+
+            # @Email
+            if '@Email' in a:
+                constraints.append(DtoFieldConstraint(kind="email"))
+
+        return constraints
+
+    def _extract_record_fields(
+        self, content: str, class_name: str
+    ) -> list[DtoField]:
+        """Extract fields from a Java record's component list.
+
+        Matches: record ClassName(@NotNull String name, int age) { ... }
+        """
+        # Find the opening paren of the record component list
+        header_match = re.search(
+            rf'\brecord\s+{re.escape(class_name)}\s*\(',
+            content,
+            re.DOTALL,
+        )
+        if not header_match:
+            return []
+
+        # Walk forward from the opening paren to find the matching close,
+        # respecting nested parentheses (e.g. inside @Size(min=1, max=50)).
+        open_pos = header_match.end() - 1  # index of '('
+        depth = 0
+        close_pos = -1
+        for i in range(open_pos, len(content)):
+            if content[i] == '(':
+                depth += 1
+            elif content[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    close_pos = i
+                    break
+        if close_pos == -1:
+            return []
+
+        params_str = content[open_pos + 1:close_pos].strip()
+        if not params_str:
+            return []
+
+        fields: list[DtoField] = []
+        # Split respecting generics
+        params = self._split_params_respecting_generics(params_str)
+
+        for param in params:
+            param = param.strip()
+            if not param:
+                continue
+
+            # Extract annotations from the parameter
+            annotations: list[str] = []
+            remaining = param
+            while remaining.lstrip().startswith('@'):
+                # Extract annotation
+                ann_match = re.match(r'\s*(@\w+(?:\s*\([^)]*\))?)\s*', remaining)
+                if ann_match:
+                    annotations.append(ann_match.group(1))
+                    remaining = remaining[ann_match.end():]
+                else:
+                    break
+
+            # Remaining should be "Type name"
+            parts = remaining.strip().rsplit(None, 1)
+            if len(parts) == 2:
+                field_type, field_name = parts
+                required = any(
+                    ann_name in a
+                    for a in annotations
+                    for ann_name in ('@NotNull', '@NotBlank', '@NotEmpty', '@NonNull')
+                )
+                json_name = None
+                for a in annotations:
+                    jp_match = re.search(r'@JsonProperty\s*\(\s*["\'](\w+)["\']', a)
+                    if jp_match:
+                        json_name = jp_match.group(1)
+                        break
+                constraints = self._extract_field_constraints(annotations)
+                fields.append(DtoField(
+                    name=field_name,
+                    type=field_type.strip(),
+                    required=required,
+                    json_name=json_name,
+                    constraints=constraints,
+                ))
+
+        return fields
+
+    def _extract_kotlin_data_class_fields(
+        self, content: str, class_name: str
+    ) -> list[DtoField]:
+        """Extract fields from a Kotlin data class constructor.
+
+        Matches: data class ClassName(val name: String, val age: Int)
+        """
+        m = re.search(
+            rf'\bdata\s+class\s+{re.escape(class_name)}\s*\(([^)]*)\)',
+            content,
+            re.DOTALL,
+        )
+        if not m:
+            return []
+
+        params_str = m.group(1).strip()
+        if not params_str:
+            return []
+
+        fields: list[DtoField] = []
+        params = self._split_params_respecting_generics(params_str)
+
+        for param in params:
+            param = param.strip()
+            if not param:
+                continue
+
+            # Kotlin pattern: [val/var] name: Type [= default]
+            kt_match = re.match(
+                r'(?:val|var)\s+(\w+)\s*:\s*([\w<>,\s\?]+?)(?:\s*=\s*[^,]*)?$',
+                param.strip(),
+            )
+            if kt_match:
+                field_name = kt_match.group(1)
+                field_type = kt_match.group(2).strip()
+                # Kotlin nullable types: String? → not required
+                required = not field_type.endswith('?')
+                if field_type.endswith('?'):
+                    field_type = field_type[:-1]
+                fields.append(DtoField(
+                    name=field_name,
+                    type=field_type,
+                    required=required,
+                ))
+
+        return fields
+
+    def _extract_enum_values(self, content: str, class_name: str) -> list[str]:
+        """Extract enum constant names from a Java enum."""
+        # Find enum body
+        enum_pattern = re.compile(
+            rf'\benum\s+{re.escape(class_name)}\b[^{{]*\{{([^}}]*)',
+            re.DOTALL,
+        )
+        m = enum_pattern.search(content)
+        if not m:
+            return []
+
+        body = m.group(1)
+        # Enum constants are before the first semicolon or method
+        # Split on semicolon to get just the constants part
+        constants_part = body.split(';')[0]
+
+        # Extract constant names (uppercase identifiers, possibly with constructor args)
+        values: list[str] = []
+        for const_match in re.finditer(r'\b([A-Z][A-Z0-9_]*)\b', constants_part):
+            val = const_match.group(1)
+            if val not in values:
+                values.append(val)
+
+        return values
+
+    def _extract_brace_block(self, content: str, start: int) -> str | None:
+        """Extract content from start position to matching closing brace."""
+        depth = 1
+        i = start
+        while i < len(content) and depth > 0:
+            if content[i] == '{':
+                depth += 1
+            elif content[i] == '}':
+                depth -= 1
+            i += 1
+        if depth == 0:
+            return content[start:i - 1]
+        return None
+
+    def _is_method_or_constructor(self, line: str, class_name: str) -> bool:
+        """Check if a line looks like a method or constructor declaration."""
+        # Constructor: ClassName(
+        if re.match(
+            rf'\s*(?:public|protected|private)?\s*{re.escape(class_name)}\s*\(',
+            line,
+        ):
+            return True
+        # Method: returnType methodName(
+        if re.match(
+            r'\s*(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?[\w<>,\[\]\s]+\s+\w+\s*\(',
+            line,
+        ):
+            return True
+        return False
