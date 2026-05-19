@@ -108,6 +108,37 @@ class EntryPoint(BaseModel):
     ref: str
 
 
+class DtoFieldConstraint(BaseModel):
+    """Validation constraint on a DTO field (e.g., @Size, @Min, @Pattern)."""
+
+    kind: str  # "size", "min", "max", "pattern", "email"
+    value: str | None = None  # constraint value as string
+    min: int | None = None  # for @Size(min=...)
+    max: int | None = None  # for @Size(max=...)
+
+
+class DtoField(BaseModel):
+    """A single field in a DTO class definition."""
+
+    name: str
+    type: str  # Java type as string, e.g. "String", "List<OrderItemDto>"
+    required: bool = False  # true if @NotNull, @NotBlank, @NotEmpty
+    json_name: str | None = None  # @JsonProperty override, if different from name
+    constraints: list[DtoFieldConstraint] = Field(default_factory=list)
+    description: str | None = None  # from @Schema(description=...) or Javadoc
+
+
+class DtoSchema(BaseModel):
+    """Extracted schema of a DTO class (like an OpenAPI schema component)."""
+
+    name: str  # Simple class name, e.g. "CreateOrderRequest"
+    kind: str = "class"  # "class", "record", "enum", "interface"
+    fields: list[DtoField] = Field(default_factory=list)
+    enum_values: list[str] = Field(default_factory=list)  # for kind="enum"
+    parent: str | None = None  # superclass name if extends
+    source_file: str | None = None  # relative path to source file
+
+
 class EndpointParameter(BaseModel):
     """A single request parameter extracted from Spring annotations."""
 
@@ -224,6 +255,7 @@ class ServiceManifest(BaseModel):
     dependencies: list[Dependency] = Field(default_factory=list)
     entry_points: list[EntryPoint] = Field(default_factory=list)
     api_contracts: list[ApiContract] = Field(default_factory=list)
+    dto_schemas: dict[str, DtoSchema] = Field(default_factory=dict)
     runtime: RuntimeInfo | None = None
     ci: str | None = None
     integration_notes: list[IntegrationNote] = Field(default_factory=list, max_length=20)

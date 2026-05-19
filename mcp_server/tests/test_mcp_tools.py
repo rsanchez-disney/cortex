@@ -73,8 +73,178 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
         "extractor_version": "1.0.0",
     }
 
+    backend_manifest = {
+        "name": "sample-backend",
+        "type": "backend-java",
+        "owner": "team-backend",
+        "domain": "orders",
+        "tier": "critical",
+        "purpose": "Order management service",
+        "api_contracts": [
+            {
+                "controller": "OrderController",
+                "base_path": "/api/v1",
+                "endpoints": [
+                    {
+                        "method": "POST",
+                        "path": "/api/v1/orders",
+                        "handler": "createOrder",
+                        "request_body": {"type": "CreateOrderRequest", "required": True},
+                        "response": {"type": "OrderDto", "wrapper": "ResponseEntity"},
+                        "parameters": [],
+                    }
+                ],
+            }
+        ],
+        "dto_schemas": {
+            "CreateOrderRequest": {
+                "name": "CreateOrderRequest",
+                "kind": "class",
+                "fields": [
+                    {
+                        "name": "customerName",
+                        "type": "String",
+                        "required": True,
+                        "constraints": [
+                            {"kind": "size", "value": None, "min": 1, "max": 100}
+                        ],
+                    },
+                    {
+                        "name": "items",
+                        "type": "List<OrderItemDto>",
+                        "required": True,
+                        "constraints": [],
+                    },
+                    {
+                        "name": "shippingAddress",
+                        "type": "AddressDto",
+                        "required": False,
+                        "constraints": [],
+                    },
+                ],
+                "enum_values": [],
+                "parent": None,
+                "source_file": "src/main/java/com/example/dto/CreateOrderRequest.java",
+            },
+            "OrderDto": {
+                "name": "OrderDto",
+                "kind": "class",
+                "fields": [
+                    {"name": "id", "type": "Long", "required": False, "constraints": []},
+                    {
+                        "name": "customerName",
+                        "type": "String",
+                        "required": False,
+                        "constraints": [],
+                    },
+                    {
+                        "name": "status",
+                        "type": "OrderStatus",
+                        "required": False,
+                        "constraints": [],
+                    },
+                    {
+                        "name": "items",
+                        "type": "List<OrderItemDto>",
+                        "required": False,
+                        "constraints": [],
+                    },
+                ],
+                "enum_values": [],
+                "parent": None,
+                "source_file": "src/main/java/com/example/dto/OrderDto.java",
+            },
+            "OrderItemDto": {
+                "name": "OrderItemDto",
+                "kind": "class",
+                "fields": [
+                    {
+                        "name": "productName",
+                        "type": "String",
+                        "required": True,
+                        "constraints": [],
+                    },
+                    {
+                        "name": "quantity",
+                        "type": "int",
+                        "required": False,
+                        "constraints": [
+                            {"kind": "min", "value": "1", "min": None, "max": None}
+                        ],
+                    },
+                    {
+                        "name": "price",
+                        "type": "BigDecimal",
+                        "required": False,
+                        "constraints": [],
+                    },
+                ],
+                "enum_values": [],
+                "parent": None,
+                "source_file": "src/main/java/com/example/dto/OrderItemDto.java",
+            },
+            "OrderStatus": {
+                "name": "OrderStatus",
+                "kind": "enum",
+                "fields": [],
+                "enum_values": [
+                    "PENDING",
+                    "CONFIRMED",
+                    "SHIPPED",
+                    "DELIVERED",
+                    "CANCELLED",
+                ],
+                "parent": None,
+                "source_file": "src/main/java/com/example/dto/OrderStatus.java",
+            },
+            "AddressDto": {
+                "name": "AddressDto",
+                "kind": "class",
+                "fields": [
+                    {
+                        "name": "street",
+                        "type": "String",
+                        "required": True,
+                        "constraints": [],
+                    },
+                    {
+                        "name": "city",
+                        "type": "String",
+                        "required": True,
+                        "constraints": [],
+                    },
+                    {
+                        "name": "state",
+                        "type": "String",
+                        "required": False,
+                        "constraints": [
+                            {"kind": "size", "value": None, "min": 2, "max": 2}
+                        ],
+                    },
+                    {
+                        "name": "zipCode",
+                        "type": "String",
+                        "required": True,
+                        "constraints": [],
+                    },
+                ],
+                "enum_values": [],
+                "parent": None,
+                "source_file": "src/main/java/com/example/dto/AddressDto.java",
+            },
+        },
+        "dependencies": [],
+        "entry_points": [],
+        "kafka_produces": [],
+        "kafka_consumes": [],
+        "integration_notes": [],
+        "extracted_at": "2026-04-23T03:00:00Z",
+        "extractor_version": "1.0.0",
+    }
+
     storage.write_json("services/sample-android/manifest.json", android_manifest)
     storage.write_json("services/sample-ios/manifest.json", ios_manifest)
+    storage.write_json("services/sample-backend/manifest.json", backend_manifest)
 
     # Create graph with communication edges
     graph = {
@@ -107,6 +277,14 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
                 "kafka_produces": ["orders.created"],
                 "kafka_consumes": [],
             },
+            {
+                "name": "sample-backend",
+                "type": "backend-java",
+                "owner": "team-backend",
+                "domain": "orders",
+                "tier": "critical",
+                "purpose": "Order management service",
+            },
         ],
         "communication": {
             "edges": [
@@ -123,7 +301,7 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
         "metadata": {
             "timestamp": "2026-04-23T03:00:00Z",
             "version": "1.0.0",
-            "service_count": 2,
+            "service_count": 3,
         },
     }
     storage.write_json("graph/latest.json", graph)
@@ -397,6 +575,150 @@ class TestCommunicationContext:
         candidates = result.get("candidates", [])
         for c in candidates:
             assert "communicates_with" in c
+
+
+class TestGetEndpointContractSchemas:
+    """Tests for DTO schema resolution in get_endpoint_contract."""
+
+    def test_get_endpoint_contract_includes_schemas(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Endpoint contract includes direct DTO schemas for request/response types."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(
+                mcp_server,
+                "get_endpoint_contract",
+                {
+                    "service": "sample-backend",
+                    "method": "POST",
+                    "path": "/api/v1/orders",
+                },
+            )
+        )
+        assert "schemas" in result
+        assert "CreateOrderRequest" in result["schemas"]
+        assert "OrderDto" in result["schemas"]
+        assert result["schemas"]["CreateOrderRequest"]["kind"] == "class"
+        assert len(result["schemas"]["CreateOrderRequest"]["fields"]) == 3
+        assert result["request_body"]["type"] == "CreateOrderRequest"
+        assert result["response"]["type"] == "OrderDto"
+
+    def test_get_endpoint_contract_transitive_schemas(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Endpoint contract includes transitively referenced DTO schemas."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(
+                mcp_server,
+                "get_endpoint_contract",
+                {
+                    "service": "sample-backend",
+                    "method": "POST",
+                    "path": "/api/v1/orders",
+                },
+            )
+        )
+        schemas = result["schemas"]
+        # OrderItemDto is referenced by both CreateOrderRequest.items and OrderDto.items
+        assert "OrderItemDto" in schemas
+        # OrderStatus is referenced by OrderDto.status
+        assert "OrderStatus" in schemas
+        # AddressDto is referenced by CreateOrderRequest.shippingAddress
+        assert "AddressDto" in schemas
+        assert schemas["OrderStatus"]["kind"] == "enum"
+        assert "PENDING" in schemas["OrderStatus"]["enum_values"]
+
+    def test_get_endpoint_contract_no_schemas_when_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """No 'schemas' key when the manifest has no dto_schemas."""
+        storage = LocalStorageBackend(root=tmp_path)
+        # Manifest with api_contracts but no dto_schemas
+        manifest = {
+            "name": "no-dto-svc",
+            "type": "backend-java",
+            "owner": "team-x",
+            "domain": "test",
+            "tier": "standard",
+            "purpose": "Service without DTO schemas",
+            "api_contracts": [
+                {
+                    "controller": "TestController",
+                    "base_path": "/api",
+                    "endpoints": [
+                        {
+                            "method": "GET",
+                            "path": "/api/health",
+                            "handler": "health",
+                            "request_body": None,
+                            "response": {"type": "String"},
+                            "parameters": [],
+                        }
+                    ],
+                }
+            ],
+            "dependencies": [],
+            "entry_points": [],
+            "kafka_produces": [],
+            "kafka_consumes": [],
+            "integration_notes": [],
+            "extracted_at": "2026-04-23T03:00:00Z",
+            "extractor_version": "1.0.0",
+        }
+        storage.write_json("services/no-dto-svc/manifest.json", manifest)
+        graph = {
+            "services": [
+                {
+                    "name": "no-dto-svc",
+                    "type": "backend-java",
+                    "owner": "team-x",
+                    "domain": "test",
+                    "tier": "standard",
+                    "purpose": "Service without DTO schemas",
+                }
+            ],
+            "communication": {"edges": []},
+            "failed_extractions": [],
+            "metadata": {
+                "timestamp": "2026-04-23T03:00:00Z",
+                "version": "1.0.0",
+                "service_count": 1,
+            },
+        }
+        storage.write_json("graph/latest.json", graph)
+        server = CortexMCPServer(storage=storage)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(
+                server,
+                "get_endpoint_contract",
+                {
+                    "service": "no-dto-svc",
+                    "method": "GET",
+                    "path": "/api/health",
+                },
+            )
+        )
+        assert "schemas" not in result
+
+    def test_mobile_service_no_schemas(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Mobile services return 'No API spec' message and no schemas."""
+        result = asyncio.get_event_loop().run_until_complete(
+            _call_tool(
+                mcp_server,
+                "get_endpoint_contract",
+                {
+                    "service": "sample-android",
+                    "method": "GET",
+                    "path": "/api/v1/users",
+                },
+            )
+        )
+        assert "message" in result
+        assert "No API spec" in result["message"]
+        assert "schemas" not in result
 
 
 # --- Helper to call tools directly ---

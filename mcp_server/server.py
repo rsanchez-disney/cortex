@@ -508,6 +508,23 @@ class CortexMCPServer:
                     result["message"] = (
                         "Endpoint contract extracted from source code."
                     )
+
+                    # Resolve DTO schemas for request/response types
+                    dto_schemas_map = manifest.get("dto_schemas", {}) if manifest else {}
+                    if dto_schemas_map:
+                        root_types: set[str] = set()
+                        req_body = endpoint_contract.get("request_body", {})
+                        if req_body and req_body.get("type"):
+                            for t in _GENERIC_TYPE_RE.findall(req_body["type"]):
+                                root_types.add(t)
+                        resp = endpoint_contract.get("response", {})
+                        if resp and resp.get("type"):
+                            for t in _GENERIC_TYPE_RE.findall(resp["type"]):
+                                root_types.add(t)
+                        resolved = _resolve_endpoint_schemas(dto_schemas_map, root_types)
+                        if resolved:
+                            result["schemas"] = resolved
+
                 elif swagger_url:
                     result["message"] = (
                         f"Live Swagger/OpenAPI docs available at: {swagger_url}"
@@ -715,6 +732,83 @@ def _find_service(graph: dict, name: str) -> dict | None:
         if svc.get("name") == name:
             return svc
     return None
+
+
+# --- DTO schema resolution ---
+
+_GENERIC_TYPE_RE = re.compile(r"[A-Z]\w+")
+_PRIMITIVE_TYPES = frozenset(
+    {
+        "String",
+        "int",
+        "Integer",
+        "long",
+        "Long",
+        "double",
+        "Double",
+        "float",
+        "Float",
+        "boolean",
+        "Boolean",
+        "byte",
+        "Byte",
+        "short",
+        "Short",
+        "char",
+        "Character",
+        "void",
+        "Void",
+        "BigDecimal",
+        "BigInteger",
+        "LocalDate",
+        "LocalDateTime",
+        "ZonedDateTime",
+        "Instant",
+        "UUID",
+        "Object",
+        "Map",
+        "Date",
+        "Timestamp",
+    }
+)
+
+
+def _resolve_endpoint_schemas(
+    dto_schemas: dict[str, dict],
+    root_types: set[str],
+    max_depth: int = 5,
+) -> dict[str, dict]:
+    """Collect DTO schemas transitively referenced by *root_types*.
+
+    Performs a breadth-first walk starting from the root type names,
+    following field types and parent references up to *max_depth* levels.
+    Primitive / well-known JDK types are skipped.
+    """
+    result: dict[str, dict] = {}
+    queue = list(root_types - _PRIMITIVE_TYPES)
+    depth = 0
+    while queue and depth < max_depth:
+        next_queue: list[str] = []
+        for type_name in queue:
+            if type_name in result or type_name in _PRIMITIVE_TYPES:
+                continue
+            schema = dto_schemas.get(type_name)
+            if schema is None:
+                continue
+            result[type_name] = schema
+            # Collect types referenced by fields
+            for field in schema.get("fields", []):
+                field_type = field.get("type", "")
+                for inner in _GENERIC_TYPE_RE.findall(field_type):
+                    if inner not in result and inner not in _PRIMITIVE_TYPES:
+                        next_queue.append(inner)
+            # Collect parent type if present
+            parent = schema.get("parent")
+            if parent and parent not in result and parent not in _PRIMITIVE_TYPES:
+                next_queue.append(parent)
+        queue = next_queue
+        depth += 1
+    return result
 
 
 

@@ -3285,3 +3285,551 @@ class TestEndpointParameterExtraction:
         if redeem_ep:
             assert redeem_ep.request_body is not None
             assert redeem_ep.request_body.type == "RedeemRequest"
+
+
+# ---------------------------------------------------------------------------
+# TestDtoSchemaExtraction — DTO schema extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_backend_java_repo() -> Path:
+    """Path to the sample backend-java repo fixture."""
+    return SAMPLE_BACKEND_JAVA_REPO
+
+
+class TestDtoSchemaExtraction:
+    """Tests for DTO schema extraction from Java source files."""
+
+    def setup_method(self):
+        self.extractor = BackendJavaExtractor()
+
+    # --- _build_class_index ---
+
+    def test_build_class_index(self, sample_backend_java_repo):
+        """Test that class index maps class names to file paths."""
+        index = self.extractor._build_class_index(sample_backend_java_repo)
+        assert "CreateOrderRequest" in index
+        assert "OrderDto" in index
+        assert "OrderStatus" in index
+        assert "RewardDto" in index
+        assert "OrderItemDto" in index
+        # Should NOT include test classes
+        assert "DemoApplicationTests" not in index
+
+    # --- _detect_class_kind ---
+
+    def test_detect_class_kind_regular_class(self):
+        content = "public class CreateOrderRequest {"
+        kind, parent = self.extractor._detect_class_kind(content, "CreateOrderRequest")
+        assert kind == "class"
+        assert parent is None
+
+    def test_detect_class_kind_with_extends(self):
+        content = "public class SpecialOrder extends CreateOrderRequest {"
+        kind, parent = self.extractor._detect_class_kind(content, "SpecialOrder")
+        assert kind == "class"
+        assert parent == "CreateOrderRequest"
+
+    def test_detect_class_kind_record(self):
+        content = "public record RewardDto(String id, String name) {}"
+        kind, parent = self.extractor._detect_class_kind(content, "RewardDto")
+        assert kind == "record"
+
+    def test_detect_class_kind_enum(self):
+        content = "public enum OrderStatus {"
+        kind, parent = self.extractor._detect_class_kind(content, "OrderStatus")
+        assert kind == "enum"
+
+    def test_detect_class_kind_data_class(self):
+        content = "data class OrderDto(val id: String, val name: String)"
+        kind, parent = self.extractor._detect_class_kind(content, "OrderDto")
+        assert kind == "data_class"
+
+    def test_detect_class_kind_interface(self):
+        content = "public interface OrderService {"
+        kind, parent = self.extractor._detect_class_kind(content, "OrderService")
+        assert kind == "interface"
+
+    # --- _extract_class_fields ---
+
+    def test_extract_class_fields_basic(self):
+        content = '''
+public class SimpleDto {
+    private String name;
+    private int age;
+    private BigDecimal amount;
+}
+'''
+        fields = self.extractor._extract_class_fields(content, "SimpleDto")
+        assert len(fields) >= 3
+        names = {f.name for f in fields}
+        assert "name" in names
+        assert "age" in names
+        assert "amount" in names
+
+    def test_extract_class_fields_with_annotations(self):
+        content = '''
+public class AnnotatedDto {
+    @NotNull
+    @Size(min = 1, max = 100)
+    @Schema(description = "The user name")
+    private String name;
+
+    @JsonProperty("email_address")
+    private String email;
+
+    @JsonIgnore
+    private String secret;
+}
+'''
+        fields = self.extractor._extract_class_fields(content, "AnnotatedDto")
+        field_map = {f.name: f for f in fields}
+
+        assert "name" in field_map
+        assert field_map["name"].required is True
+        assert field_map["name"].description == "The user name"
+        assert len(field_map["name"].constraints) >= 1
+        size_constraint = next(
+            (c for c in field_map["name"].constraints if c.kind == "size"),
+            None,
+        )
+        assert size_constraint is not None
+        assert size_constraint.min == 1
+        assert size_constraint.max == 100
+
+        assert "email" in field_map
+        assert field_map["email"].json_name == "email_address"
+
+        # @JsonIgnore should be excluded
+        assert "secret" not in field_map
+
+    def test_extract_class_fields_skips_static(self):
+        content = '''
+public class WithStatic {
+    private static final String CONSTANT = "value";
+    private String name;
+}
+'''
+        fields = self.extractor._extract_class_fields(content, "WithStatic")
+        names = {f.name for f in fields}
+        assert "name" in names
+        assert "CONSTANT" not in names
+
+    # --- _extract_record_fields ---
+
+    def test_extract_record_fields(self):
+        content = '''
+public record RewardDto(
+    String id,
+    String name,
+    int points,
+    String description
+) {}
+'''
+        fields = self.extractor._extract_record_fields(content, "RewardDto")
+        assert len(fields) == 4
+        names = [f.name for f in fields]
+        assert names == ["id", "name", "points", "description"]
+
+    def test_extract_record_fields_with_annotations(self):
+        content = '''
+public record ValidatedRecord(
+    @NotNull String id,
+    @Size(min = 1, max = 50) String name
+) {}
+'''
+        fields = self.extractor._extract_record_fields(content, "ValidatedRecord")
+        assert len(fields) == 2
+        assert fields[0].required is True
+        assert any(c.kind == "size" for c in fields[1].constraints)
+
+    # --- _extract_enum_values ---
+
+    def test_extract_enum_values(self):
+        content = '''
+public enum OrderStatus {
+    PENDING,
+    CONFIRMED,
+    SHIPPED,
+    DELIVERED,
+    CANCELLED
+}
+'''
+        values = self.extractor._extract_enum_values(content, "OrderStatus")
+        assert values == ["PENDING", "CONFIRMED", "SHIPPED", "DELIVERED", "CANCELLED"]
+
+    def test_extract_enum_values_with_constructor(self):
+        content = '''
+public enum Priority {
+    LOW(1),
+    MEDIUM(2),
+    HIGH(3);
+
+    private final int level;
+    Priority(int level) { this.level = level; }
+}
+'''
+        values = self.extractor._extract_enum_values(content, "Priority")
+        assert "LOW" in values
+        assert "MEDIUM" in values
+        assert "HIGH" in values
+
+    # --- _extract_kotlin_data_class_fields ---
+
+    def test_extract_kotlin_data_class_fields(self):
+        content = '''
+data class OrderDto(
+    val id: String,
+    val name: String,
+    val amount: BigDecimal,
+    val notes: String?
+)
+'''
+        fields = self.extractor._extract_kotlin_data_class_fields(
+            content, "OrderDto"
+        )
+        assert len(fields) == 4
+        field_map = {f.name: f for f in fields}
+        assert field_map["id"].type == "String"
+        assert field_map["id"].required is True
+        assert field_map["notes"].required is False  # nullable
+
+    # --- _collect_dto_type_names ---
+
+    def test_collect_dto_type_names(self):
+        from cortex.schema import (
+            ApiContract,
+            EndpointIndex,
+            EndpointRequestBody,
+            EndpointResponse,
+        )
+
+        contracts = [
+            ApiContract(
+                kind="spring-annotations",
+                endpoints=[
+                    EndpointIndex(
+                        method="POST",
+                        path="/orders",
+                        request_body=EndpointRequestBody(
+                            type="CreateOrderRequest"
+                        ),
+                        response=EndpointResponse(
+                            type="OrderDto",
+                            wrapper="ResponseEntity",
+                        ),
+                    ),
+                    EndpointIndex(
+                        method="GET",
+                        path="/orders",
+                        response=EndpointResponse(
+                            type="List<OrderDto>",
+                            wrapper="ResponseEntity",
+                        ),
+                    ),
+                ],
+            )
+        ]
+        names = self.extractor._collect_dto_type_names(contracts)
+        assert "CreateOrderRequest" in names
+        assert "OrderDto" in names
+        # List should be filtered out as primitive
+        assert "List" not in names
+        # ResponseEntity should not appear
+        assert "ResponseEntity" not in names
+
+    # --- _parse_java_class ---
+
+    def test_parse_java_class_pojo(self, sample_backend_java_repo):
+        dto_path = (
+            sample_backend_java_repo
+            / "src/main/java/com/example/demo/dto/CreateOrderRequest.java"
+        )
+        schema = self.extractor._parse_java_class(
+            dto_path, sample_backend_java_repo
+        )
+        assert schema is not None
+        assert schema.name == "CreateOrderRequest"
+        assert schema.kind == "class"
+        # customerId, items, totalAmount, notes (not internalTrackingId)
+        assert len(schema.fields) >= 3
+
+        field_map = {f.name: f for f in schema.fields}
+        assert "customerId" in field_map
+        assert field_map["customerId"].required is True
+        assert "items" in field_map
+        assert field_map["items"].json_name == "order_items"
+        # @JsonIgnore field should be excluded
+        assert "internalTrackingId" not in field_map
+
+    def test_parse_java_class_record(self, sample_backend_java_repo):
+        dto_path = (
+            sample_backend_java_repo
+            / "src/main/java/com/example/demo/dto/RewardDto.java"
+        )
+        schema = self.extractor._parse_java_class(
+            dto_path, sample_backend_java_repo
+        )
+        assert schema is not None
+        assert schema.name == "RewardDto"
+        assert schema.kind == "record"
+        assert len(schema.fields) == 4
+
+    def test_parse_java_class_enum(self, sample_backend_java_repo):
+        dto_path = (
+            sample_backend_java_repo
+            / "src/main/java/com/example/demo/dto/OrderStatus.java"
+        )
+        schema = self.extractor._parse_java_class(
+            dto_path, sample_backend_java_repo
+        )
+        assert schema is not None
+        assert schema.name == "OrderStatus"
+        assert schema.kind == "enum"
+        assert "PENDING" in schema.enum_values
+        assert "CANCELLED" in schema.enum_values
+
+    # --- _extract_dto_schemas (integration) ---
+
+    def test_extract_dto_schemas_integration(self, sample_backend_java_repo):
+        """Test full DTO extraction pipeline against fixture repo."""
+        from cortex.schema import (
+            ApiContract,
+            EndpointIndex,
+            EndpointRequestBody,
+            EndpointResponse,
+        )
+
+        contracts = [
+            ApiContract(
+                kind="spring-annotations",
+                endpoints=[
+                    EndpointIndex(
+                        method="POST",
+                        path="/v1/orders",
+                        request_body=EndpointRequestBody(
+                            type="CreateOrderRequest"
+                        ),
+                        response=EndpointResponse(
+                            type="OrderDto",
+                            wrapper="ResponseEntity",
+                        ),
+                    ),
+                ],
+            )
+        ]
+        schemas = self.extractor._extract_dto_schemas(
+            sample_backend_java_repo, contracts
+        )
+
+        # Should have resolved CreateOrderRequest, OrderDto, and nested types
+        assert "CreateOrderRequest" in schemas
+        assert "OrderDto" in schemas
+        # OrderItemDto is referenced by both CreateOrderRequest and OrderDto
+        assert "OrderItemDto" in schemas
+        # OrderStatus is referenced by OrderDto
+        assert "OrderStatus" in schemas
+        assert schemas["OrderStatus"].kind == "enum"
+
+    def test_extract_dto_schemas_in_manifest(self, sample_backend_java_repo):
+        """Test that dto_schemas appears in the full extraction output."""
+        service_yaml = ServiceYaml(
+            name="sample-backend-java",
+            type="backend-java",
+            owner="team-backend",
+            domain="orders",
+            tier="critical",
+            purpose="Sample backend Java service",
+        )
+        manifest = self.extractor.extract(
+            sample_backend_java_repo, service_yaml
+        )
+        # Should have dto_schemas populated
+        assert isinstance(manifest.dto_schemas, dict)
+        # The fixture has CreateOrderRequest and OrderDto referenced
+        # in controller endpoints
+        if manifest.api_contracts:
+            # If endpoints reference DTOs, schemas should be extracted
+            has_dto_refs = any(
+                ep.request_body or ep.response
+                for c in manifest.api_contracts
+                for ep in c.endpoints
+            )
+            if has_dto_refs:
+                assert len(manifest.dto_schemas) > 0
+
+    # --- _extract_field_constraints ---
+
+    def test_extract_field_constraints_size(self):
+        annotations = ["@Size(min = 1, max = 100)"]
+        constraints = self.extractor._extract_field_constraints(annotations)
+        assert len(constraints) == 1
+        assert constraints[0].kind == "size"
+        assert constraints[0].min == 1
+        assert constraints[0].max == 100
+
+    def test_extract_field_constraints_min_max(self):
+        annotations = ["@Min(0)", "@Max(1000)"]
+        constraints = self.extractor._extract_field_constraints(annotations)
+        assert len(constraints) == 2
+        kinds = {c.kind for c in constraints}
+        assert "min" in kinds
+        assert "max" in kinds
+
+    def test_extract_field_constraints_pattern(self):
+        annotations = ['@Pattern(regexp = "^[A-Z]+$")']
+        constraints = self.extractor._extract_field_constraints(annotations)
+        assert len(constraints) == 1
+        assert constraints[0].kind == "pattern"
+        assert constraints[0].value == "^[A-Z]+$"
+
+    def test_extract_field_constraints_email(self):
+        annotations = ["@Email"]
+        constraints = self.extractor._extract_field_constraints(annotations)
+        assert len(constraints) == 1
+        assert constraints[0].kind == "email"
+
+    # --- _extract_brace_block ---
+
+    def test_extract_brace_block(self):
+        content = "class Foo { int x; { nested; } }"
+        # Start after the first '{'
+        result = self.extractor._extract_brace_block(content, 12)
+        assert result is not None
+        assert "int x;" in result
+        assert "nested;" in result
+
+    def test_extract_brace_block_unmatched(self):
+        content = "class Foo { int x;"
+        result = self.extractor._extract_brace_block(content, 12)
+        assert result is None
+
+    # --- Edge case tests ---
+
+    def test_circular_reference_safe(self, sample_backend_java_repo):
+        """Circular references (A→B→A) should resolve without infinite recursion."""
+        class_index = self.extractor._build_class_index(sample_backend_java_repo)
+        # Ensure both circular classes are in the index
+        assert "CircularA" in class_index
+        assert "CircularB" in class_index
+
+        schemas: dict = {}
+        # Should complete without hanging or raising
+        self.extractor._resolve_dto_types(
+            {"CircularA"}, class_index, sample_backend_java_repo, schemas, depth=0
+        )
+
+        assert "CircularA" in schemas
+        assert "CircularB" in schemas
+
+        # Verify field references
+        a_fields = {f.name: f for f in schemas["CircularA"].fields}
+        b_fields = {f.name: f for f in schemas["CircularB"].fields}
+        assert "other" in a_fields
+        assert a_fields["other"].type == "CircularB"
+        assert "back" in b_fields
+        assert b_fields["back"].type == "CircularA"
+
+    def test_unresolvable_type_skipped(self, sample_backend_java_repo):
+        """Types not found in the class index should be silently skipped."""
+        class_index = self.extractor._build_class_index(sample_backend_java_repo)
+        schemas: dict = {}
+
+        # Should not raise any exception
+        self.extractor._resolve_dto_types(
+            {"NonExistentDto"}, class_index, sample_backend_java_repo, schemas, depth=0
+        )
+
+        assert "NonExistentDto" not in schemas
+
+    def test_abstract_parent_detected(self, sample_backend_java_repo):
+        """Abstract parent class should be parsed with correct fields."""
+        dto_path = (
+            sample_backend_java_repo
+            / "src/main/java/com/example/demo/dto/BaseRequest.java"
+        )
+        schema = self.extractor._parse_java_class(
+            dto_path, sample_backend_java_repo
+        )
+        assert schema is not None
+        assert schema.kind == "class"
+
+        field_map = {f.name: f for f in schema.fields}
+        assert "requestId" in field_map
+        assert field_map["requestId"].required is True  # @NotNull
+        assert "correlationId" in field_map
+        assert "timestamp" in field_map
+
+    def test_transitive_dto_resolution(self, tmp_path):
+        """Transitive references (A→B→C) should all be resolved."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        (src / "TypeA.java").write_text(
+            "package com.example;\n"
+            "public class TypeA {\n"
+            "    private String id;\n"
+            "    private TypeB nested;\n"
+            "}\n"
+        )
+        (src / "TypeB.java").write_text(
+            "package com.example;\n"
+            "public class TypeB {\n"
+            "    private String label;\n"
+            "    private TypeC deep;\n"
+            "}\n"
+        )
+        (src / "TypeC.java").write_text(
+            "package com.example;\n"
+            "public class TypeC {\n"
+            "    private String value;\n"
+            "}\n"
+        )
+
+        class_index = self.extractor._build_class_index(tmp_path)
+        assert "TypeA" in class_index
+        assert "TypeB" in class_index
+        assert "TypeC" in class_index
+
+        schemas: dict = {}
+        self.extractor._resolve_dto_types(
+            {"TypeA"}, class_index, tmp_path, schemas, depth=0
+        )
+
+        assert "TypeA" in schemas
+        assert "TypeB" in schemas
+        assert "TypeC" in schemas
+
+    def test_depth_limit_respected(self, tmp_path):
+        """Resolution should stop at _MAX_DTO_DEPTH and not resolve deeper types."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        # Create a chain: Type1 → Type2 → ... → Type7
+        for i in range(1, 8):
+            next_field = (
+                f"    private Type{i + 1} next;\n" if i < 7 else ""
+            )
+            (src / f"Type{i}.java").write_text(
+                f"package com.example;\n"
+                f"public class Type{i} {{\n"
+                f"    private String name;\n"
+                f"{next_field}"
+                f"}}\n"
+            )
+
+        class_index = self.extractor._build_class_index(tmp_path)
+        schemas: dict = {}
+        self.extractor._resolve_dto_types(
+            {"Type1"}, class_index, tmp_path, schemas, depth=0
+        )
+
+        # With _MAX_DTO_DEPTH=5, depths 0-4 are processed (5 levels)
+        # Type1(d=0) → Type2(d=1) → Type3(d=2) → Type4(d=3) → Type5(d=4) → Type6(d=5, blocked)
+        for i in range(1, 6):
+            assert f"Type{i}" in schemas, f"Type{i} should be resolved at depth {i - 1}"
+
+        # Type6 and Type7 should NOT be resolved (depth limit reached)
+        assert "Type6" not in schemas, "Type6 should be blocked by depth limit"
+        assert "Type7" not in schemas, "Type7 should be blocked by depth limit"
