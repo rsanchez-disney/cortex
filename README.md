@@ -124,9 +124,17 @@ AZURE_PAT=your-pat-here uv run cortex run-local --config config/repos-local.yaml
 
 #### 5. Start MCP server locally
 
+The MCP server supports two transport modes:
+
+**stdio** (for local AI agent use — e.g. Kilo in stdio mode):
 ```bash
-# Point at the local pipeline output
 uv run cortex mcp-server --mode stdio --storage-backend local --storage-bucket ./cortex-output
+```
+
+**streamable-http** (for remote/network use — serves at `POST /mcp`):
+```bash
+uv run cortex mcp-server --mode http --storage-backend local --storage-bucket ./cortex-output
+# Default port: 8000 → http://localhost:8000/mcp
 ```
 
 ### Individual Commands
@@ -159,7 +167,7 @@ cortex extract (per repo, parallel)
 cortex aggregate (once)
     │
     ▼
-Storage (local filesystem or GCS)
+Storage (local filesystem / GCS / Firestore)
     ├── graph/latest.json
     ├── services/{name}/manifest.json
     └── runs/{timestamp}.json
@@ -178,6 +186,196 @@ AI Agents
 3. Output: normalized `manifest.json` per repo.
 4. The aggregator merges all manifests into `graph/latest.json`.
 5. The MCP server reads the graph and serves queries.
+
+## MCP Server Transports
+
+| Mode | Transport | Endpoint | Use case |
+|------|-----------|----------|----------|
+| `stdio` | stdio | — | Local AI agents (e.g. Kilo spawning the process) |
+| `http` | Streamable HTTP (MCP 2025-03-26) | `POST /mcp` | Remote clients, Cloud Run, network-connected agents |
+
+The HTTP mode uses FastMCP's `streamable_http_app()` — a single `/mcp` endpoint that handles both request/response and server-sent event streaming. This replaces the legacy SSE transport (`/sse` + `/messages/`).
+
+### Connecting Kilo (local)
+
+In `kilo.json`, use `type: remote` to connect to the local HTTP server:
+
+```json
+{
+  "mcp": {
+    "cortex": {
+      "type": "remote",
+      "url": "http://localhost:8000/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+Start the server before launching Kilo:
+```bash
+uv run cortex mcp-server --mode http --storage-backend local --storage-bucket ./cortex-output
+```
+
+## GCP Cloud Run Deployment
+
+The MCP server is deployed to GCP Cloud Run for production use by AI agents. The same `run_http()` method used locally runs inside the container — the upgrade to streamable-http transport applies automatically.
+
+### Architecture on Cloud Run
+
+```
+AI agent (authenticated SA)
+    │  POST https://{cortex-url}/mcp  (OIDC token in Authorization header)
+    ▼
+Cloud Run ingress (internal-only, IAM-authenticated)
+    │  HTTPS → HTTP:8080
+    ▼
+Container: python -m mcp_server
+    │  server.run_http(host="0.0.0.0", port=8080)
+    ▼
+FastMCP streamable_http_app() → /mcp endpoint
+    │
+    ▼
+Firestore (named database "cortex") — reads graph/latest.json + manifests
+```
+
+### Current Deployment
+
+| Property | Value |
+|---|---|
+| **GCP Project** | `prj-ai-flow-orchestrator-gp-gc` |
+| **Cloud Run service** | `cortex` |
+| **Region** | `us-central1` |
+| **Service URL** | `https://cortex-2gqh4rrbwa-uc.a.run.app` |
+| **Firestore database** | `cortex` (named database, ~30 services) |
+
+### Security layers
+
+| Layer | Mechanism |
+|-------|-----------|
+| HTTPS | Cloud Run terminates TLS automatically — container speaks plain HTTP on 8080 |
+| No public access | `--no-allow-unauthenticated` — every request requires a valid Google identity token |
+| Ingress | `--ingress all` — Cloud Run accepts external HTTPS; IAM still enforces auth on every request |
+| IAM invocation | `roles/run.invoker` granted only to authorized service accounts / users |
+| Minimal SA permissions | Container SA has only `datastore.user`, `secretmanager.secretAccessor`, `logging.logWriter` |
+
+No application-level auth in the MCP server code — Cloud Run handles authentication and authorization entirely at the infrastructure layer.
+
+> **Note on `--ingress all` vs `--ingress internal`:** The service uses `--ingress all` (not `internal`) so that human developers and AI agents outside the GCP VPC can reach it via `gcloud run services proxy` or direct HTTPS. `--no-allow-unauthenticated` remains enforced, so every request still requires a valid Google identity token — there is no public anonymous access.
+
+### Connecting to Cloud Run (Remote MCP)
+
+Developers and AI agents access the Cloud Run MCP server via `gcloud run services proxy`, which creates a local tunnel authenticated with your Google identity:
+
+```bash
+# Start the authenticated local proxy (port 3128 → Cloud Run)
+gcloud run services proxy cortex \
+  --region=us-central1 \
+  --project=prj-ai-flow-orchestrator-gp-gc \
+  --port=3128
+```
+
+Then configure Kilo (or any MCP client) to use the local proxy URL:
+
+```json
+{
+  "mcp": {
+    "cortex": {
+      "type": "remote",
+      "url": "http://localhost:3128/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+The proxy transparently forwards requests with your OIDC identity token — no manual token management needed.
+
+### Access Management
+
+All access is controlled via `roles/run.invoker` on the Cloud Run service. **No code changes required** — just IAM updates.
+
+#### Grant access to a user
+
+```bash
+# Grant a developer access to the Cloud Run MCP server
+gcloud run services add-iam-policy-binding cortex \
+  --region=us-central1 \
+  --project=prj-ai-flow-orchestrator-gp-gc \
+  --member="user:name.surname@globant.com" \
+  --role="roles/run.invoker"
+```
+
+#### Grant access to a service account (for automated agents)
+
+```bash
+# Grant an AI agent service account access
+gcloud run services add-iam-policy-binding cortex \
+  --region=us-central1 \
+  --project=prj-ai-flow-orchestrator-gp-gc \
+  --member="serviceAccount:my-agent-sa@prj-ai-flow-orchestrator-gp-gc.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+```
+
+#### Revoke access
+
+```bash
+# Revoke a user's access
+gcloud run services remove-iam-policy-binding cortex \
+  --region=us-central1 \
+  --project=prj-ai-flow-orchestrator-gp-gc \
+  --member="user:name.surname@globant.com" \
+  --role="roles/run.invoker"
+```
+
+#### List current authorized principals
+
+```bash
+gcloud run services get-iam-policy cortex \
+  --region=us-central1 \
+  --project=prj-ai-flow-orchestrator-gp-gc
+```
+
+#### Verify your own access
+
+```bash
+# Should return HTTP 200 with MCP JSON response
+TOKEN=$(gcloud auth print-identity-token)
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST https://cortex-2gqh4rrbwa-uc.a.run.app/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}'
+# Expected: 200
+```
+
+### Deploy
+
+```bash
+# One-time setup and every update (idempotent)
+export GCP_PROJECT_ID=your-project-id
+./scripts/deploy.sh
+```
+
+The script creates (if needed) and deploys: Artifact Registry repo, service account + IAM bindings, Firestore database (`cortex`), and the Cloud Run service.
+
+### Upload data to Firestore
+
+After running `cortex run-local` locally, push the extracted graph and manifests to Firestore:
+
+```bash
+uv run cortex run-local --config config/repos-real.yaml --output-dir ./cortex-output
+./scripts/upload-to-firestore.sh ./cortex-output
+```
+
+### Storage backends
+
+| Backend | Used when | Config |
+|---------|-----------|--------|
+| `local` | Local dev | `--storage-bucket ./cortex-output` |
+| `gcs` | Azure DevOps pipeline | `--storage-bucket gs://my-bucket` |
+| `firestore` | Cloud Run (production) | `FIRESTORE_DATABASE=cortex` env var |
 
 ## Adding a New Repo
 
@@ -333,11 +531,16 @@ If you see `"AZURE_PAT environment variable required for cloning repo..."`:
 ```
 memory-hub/
 ├── pyproject.toml
+├── Dockerfile                   # Cloud Run container (streamable-HTTP mode, port 8080)
+├── scripts/
+│   ├── deploy.sh                # Idempotent GCP Cloud Run deploy
+│   └── upload-to-firestore.sh   # Push local cortex-output to Firestore
 ├── src/cortex/
 │   ├── cli.py              # CLI entry point (typer)
 │   ├── schema.py            # Pydantic models
 │   ├── validation.py        # Service metadata validation
-│   ├── storage.py           # Storage backend (local + GCS)
+│   ├── storage.py           # Storage backend (local + GCS + Firestore)
+│   ├── firestore_storage.py # FirestoreStorageBackend
 │   ├── aggregator.py        # Graph aggregation
 │   ├── repo_cloner.py       # Repo cloning & local config generation
 │   └── extractors/
@@ -346,7 +549,8 @@ memory-hub/
 │       ├── ios.py           # iOS extractor
 │       └── backend_java.py  # Backend Java (Spring Boot) extractor
 ├── mcp_server/
-│   ├── server.py            # MCP server (4 tools)
+│   ├── server.py            # MCP server (4 tools, stdio + streamable-http)
+│   ├── __main__.py          # Cloud Run entry point (python -m mcp_server)
 │   └── tests/
 ├── tests/
 │   ├── fixtures/            # Sample repos for testing (android, ios, ios-multitarget, backend-java)
@@ -359,7 +563,6 @@ memory-hub/
 ## Open Questions
 
 1. **Storage backend default:** Currently defaulting to GCS. Consider Azure Blob if needed.
-2. **MCP deployment target:** Cloud Run recommended for parity with existing infrastructure.
-3. **Secret management:** Azure Key Vault configured. GCP Secret Manager is an alternative.
-4. **Monorepo support:** If any repos contain multiple services, the schema would need a `services:` array variant.
-5. **Repos config CI enforcement:** A shared GitHub Action / Azure template for validating repos config entries is a useful follow-up.
+2. **Secret management:** Azure Key Vault configured. GCP Secret Manager is an alternative.
+3. **Monorepo support:** If any repos contain multiple services, the schema would need a `services:` array variant.
+4. **Repos config CI enforcement:** A shared GitHub Action / Azure template for validating repos config entries is a useful follow-up.
