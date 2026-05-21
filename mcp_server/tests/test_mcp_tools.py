@@ -360,7 +360,7 @@ class TestFindRelevantServices:
     def test_returns_relevant_services(self, mcp_server: CortexMCPServer) -> None:
         """Returns relevant services for a known task description."""
         # Access the tool function directly through the registered tools
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "find_relevant_services",
@@ -378,7 +378,7 @@ class TestFindRelevantServices:
 
     def test_max_results_respected(self, mcp_server: CortexMCPServer) -> None:
         """max_results limits the number of candidates."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "find_relevant_services",
@@ -398,7 +398,7 @@ class TestFindRelevantServices:
         )
         server = CortexMCPServer(storage=storage)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 server,
                 "find_relevant_services",
@@ -415,7 +415,7 @@ class TestListEndpoints:
 
     def test_returns_endpoints_for_known_service(self, mcp_server: CortexMCPServer) -> None:
         """Returns endpoints for a known service."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(mcp_server, "list_endpoints", {"service": "sample-android"})
         )
         assert result["service"] == "sample-android"
@@ -423,7 +423,7 @@ class TestListEndpoints:
 
     def test_unknown_service_returns_error(self, mcp_server: CortexMCPServer) -> None:
         """Unknown service returns error."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(mcp_server, "list_endpoints", {"service": "nonexistent"})
         )
         assert "error" in result
@@ -434,7 +434,7 @@ class TestGetServiceContext:
 
     def test_returns_full_context(self, mcp_server: CortexMCPServer) -> None:
         """Returns full context by default."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(mcp_server, "get_service_context", {"name": "sample-android"})
         )
         assert result["name"] == "sample-android"
@@ -445,7 +445,7 @@ class TestGetServiceContext:
 
     def test_include_filters_correctly(self, mcp_server: CortexMCPServer) -> None:
         """include parameter filters sections correctly."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "get_service_context",
@@ -461,7 +461,7 @@ class TestGetServiceContext:
 
     def test_unknown_service_returns_error(self, mcp_server: CortexMCPServer) -> None:
         """Unknown service returns error."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(mcp_server, "get_service_context", {"name": "nonexistent"})
         )
         assert "error" in result
@@ -471,7 +471,7 @@ class TestGetEndpointContract:
 
     def test_mobile_returns_no_api_spec_message(self, mcp_server: CortexMCPServer) -> None:
         """For mobile services, returns 'no API spec available' message."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "get_endpoint_contract",
@@ -487,7 +487,7 @@ class TestGetEndpointContract:
 
     def test_unknown_service_returns_error(self, mcp_server: CortexMCPServer) -> None:
         """Unknown service returns error."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "get_endpoint_contract",
@@ -506,14 +506,14 @@ class TestCommunicationContext:
 
     def test_communication_included_by_default(self, mcp_server: CortexMCPServer) -> None:
         """By default, get_service_context includes 'communication' key."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(mcp_server, "get_service_context", {"name": "sample-android"})
         )
         assert "communication" in result
 
     def test_communication_shows_kafka_subscriptions(self, mcp_server: CortexMCPServer) -> None:
         """Service that consumes from a topic → subscribes_to populated."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(mcp_server, "get_service_context", {"name": "sample-android"})
         )
         comm = result.get("communication", {})
@@ -524,7 +524,7 @@ class TestCommunicationContext:
 
     def test_communication_shows_kafka_publishes(self, mcp_server: CortexMCPServer) -> None:
         """Service that produces to a topic → publishes_to populated."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(mcp_server, "get_service_context", {"name": "sample-ios"})
         )
         comm = result.get("communication", {})
@@ -535,7 +535,7 @@ class TestCommunicationContext:
 
     def test_communication_filtered_when_excluded(self, mcp_server: CortexMCPServer) -> None:
         """include=['manifest'] → no 'communication' key in response."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "get_service_context",
@@ -549,7 +549,7 @@ class TestCommunicationContext:
         self, mcp_server: CortexMCPServer
     ) -> None:
         """find_relevant_services results include communicates_with neighbor list."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "find_relevant_services",
@@ -565,7 +565,7 @@ class TestCommunicationContext:
         self, mcp_server: CortexMCPServer
     ) -> None:
         """Empty query (list all) also includes communicates_with."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "find_relevant_services",
@@ -584,7 +584,7 @@ class TestGetEndpointContractSchemas:
         self, mcp_server: CortexMCPServer
     ) -> None:
         """Endpoint contract includes direct DTO schemas for request/response types."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "get_endpoint_contract",
@@ -607,7 +607,7 @@ class TestGetEndpointContractSchemas:
         self, mcp_server: CortexMCPServer
     ) -> None:
         """Endpoint contract includes transitively referenced DTO schemas."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "get_endpoint_contract",
@@ -688,7 +688,7 @@ class TestGetEndpointContractSchemas:
         storage.write_json("graph/latest.json", graph)
         server = CortexMCPServer(storage=storage)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 server,
                 "get_endpoint_contract",
@@ -705,7 +705,7 @@ class TestGetEndpointContractSchemas:
         self, mcp_server: CortexMCPServer
     ) -> None:
         """Mobile services return 'No API spec' message and no schemas."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _call_tool(
                 mcp_server,
                 "get_endpoint_contract",

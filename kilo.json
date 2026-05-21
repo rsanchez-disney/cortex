@@ -1,7 +1,12 @@
 {
   "$schema": "https://app.kilo.ai/config.json",
   "mcp": {
-    "cortex": {
+    "cortex-stream": {
+      "type": "remote",
+      "url": "http://127.0.0.1:3128/mcp",
+      "enabled": true
+    },
+    "cortex-local": {
       "type": "local",
       "command": [
         "uv",

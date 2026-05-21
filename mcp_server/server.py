@@ -6,7 +6,7 @@ Tools:
 3. get_service_context — deep context on a single service
 4. get_endpoint_contract — full endpoint schema (deferred for mobile)
 
-Supports both stdio and HTTP/SSE modes.
+Supports both stdio and streamable-HTTP modes.
 """
 
 from __future__ import annotations
@@ -558,6 +558,16 @@ class CortexMCPServer:
         except StorageError:
             logger.warning("graph/latest.json not found, using empty graph")
             self._graph = {"services": [], "failed_extractions": [], "metadata": {}}
+        except Exception as exc:  # noqa: BLE001
+            # Catch-all for infrastructure errors (PermissionDenied, network, etc.)
+            # so the server can still start and serve requests even if Firestore
+            # is temporarily unreachable or the graph has not been uploaded yet.
+            logger.warning(
+                "failed to load graph from storage, using empty graph",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            self._graph = {"services": [], "failed_extractions": [], "metadata": {}}
 
     async def _get_manifest(self, name: str) -> dict | None:
         """Fetch a service manifest, with in-process caching (TTL: 1 hour)."""
@@ -616,33 +626,37 @@ class CortexMCPServer:
             )
 
     async def run_http(self, host: str = "0.0.0.0", port: int = 8000) -> None:
-        """Run the server in HTTP/SSE mode."""
+        """Run the server in streamable-HTTP mode (MCP 2025-03-26 transport).
+
+        Serves the MCP endpoint at POST/GET /mcp — compatible with clients
+        that use the ``type: remote`` (streamable-http) transport, e.g. Kilo.
+        """
         await self._refresh_graph()
 
-        from mcp.server.sse import SseServerTransport
-        from starlette.applications import Starlette
-        from starlette.routing import Route
+        import uvicorn
+        from mcp.server.transport_security import TransportSecuritySettings
 
-        sse = SseServerTransport("/messages/")
-
-        async def handle_sse(request):
-            async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-                await self._mcp._mcp_server.run(
-                    streams[0],
-                    streams[1],
-                    self._mcp._mcp_server.create_initialization_options(),
-                )
-
-        starlette_app = Starlette(
-            routes=[
-                Route("/sse", endpoint=handle_sse),
-                Route("/messages/", endpoint=sse.handle_post_message, methods=["POST"]),
-            ],
+        # FastMCP 1.27+ enables DNS rebinding protection by default, which
+        # validates the Host header against an allow-list. On Cloud Run, all
+        # security is handled at the infrastructure layer (IAM + HTTPS), so
+        # we disable the in-process check to avoid 421 rejections from
+        # legitimate proxied requests.
+        self._mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
         )
 
-        import uvicorn
+        # FastMCP exposes a ready-made Starlette app for streamable-http.
+        # It handles session management, SSE streaming, and JSON responses.
+        starlette_app = self._mcp.streamable_http_app()
 
-        config = uvicorn.Config(starlette_app, host=host, port=port)
+        config = uvicorn.Config(
+            starlette_app,
+            host=host,
+            port=port,
+            # Trust the Cloud Run / GCP load-balancer proxy headers.
+            proxy_headers=True,
+            forwarded_allow_ips="*",
+        )
         server = uvicorn.Server(config)
         await server.serve()
 

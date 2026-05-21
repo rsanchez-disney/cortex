@@ -52,15 +52,25 @@ class StorageBackend(ABC):
         """Factory: create the appropriate storage backend.
 
         Args:
-            backend: "local" or "gcs"
-            bucket: For local, the root directory path. For GCS, the bucket name.
+            backend: "local", "gcs", or "firestore"
+            bucket: For local, the root directory path.
+                    For GCS, the bucket name.
+                    For Firestore, the named database (e.g. "cortex").
+            **kwargs: Extra arguments forwarded to the backend constructor.
+                      For Firestore, accepts ``project`` (GCP project ID).
         """
         if backend == "local":
             return LocalStorageBackend(root=Path(bucket))
         elif backend == "gcs":
             return GCSStorageBackend(bucket_name=bucket, **kwargs)
+        elif backend == "firestore":
+            from cortex.firestore_storage import FirestoreStorageBackend
+
+            return FirestoreStorageBackend(database=bucket, **kwargs)  # type: ignore[arg-type]
         else:
-            raise StorageError(f"Unknown storage backend: '{backend}'. Supported: local, gcs")
+            raise StorageError(
+                f"Unknown storage backend: '{backend}'. Supported: local, gcs, firestore"
+            )
 
 
 class LocalStorageBackend(StorageBackend):

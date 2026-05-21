@@ -1,0 +1,68 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Testing & coverage ───────────────────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.coveragerc
+
+# ─── Linting / type checking ──────────────────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.pytype/
+
+# ─── Git ──────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ─── Environment & secrets ────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+service-account*.json
+credentials*.json
+
+# ─── Cortex output & cloned repos ────────────────────────────────────────────
+cortex-output/
+cortex-output-*/
+.repos/
+
+# ─── IDE & OS ─────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+.AppleDouble
+
+# ─── Docs & plans ─────────────────────────────────────────────────────────────
+plans/
+README.md
+*.md
+
+# ─── Config files (not needed at runtime) ────────────────────────────────────
+config/
+schemas/
+pipelines/
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+kilo.json
+*.ipynb
+.ipynb_checkpoints/
