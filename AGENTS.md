@@ -115,6 +115,12 @@ uv run pytest tests/test_backend_java_extractor.py -v
     ```
     This is safe because Cloud Run's infrastructure already handles all security concerns (TLS, IAM, HTTPS).
 
+11. **`stateless_http=True` is required for Cloud Run.** FastMCP's default stateful HTTP mode stores session state in the container's memory. Cloud Run is serverless: instances are ephemeral, can scale to zero, and requests may be routed to different instances with no shared memory. When a client sends a request with an `mcp-session-id` that was created on a different instance, FastMCP returns `HTTP 404 / {"error": {"message": "Session not found"}}`. The fix is applied in `mcp_server/server.py` `run_http()`:
+    ```python
+    self._mcp.settings.stateless_http = True
+    ```
+    In stateless mode, FastMCP creates a fresh transport per request — no session ID is issued or required. This is the correct mode for serverless deployments. Security is unaffected: Cloud Run IAM enforces authentication on every request at the infrastructure layer before the container is reached. All 4 Cortex MCP tools are read-only and stateless by design, so no session continuity is needed.
+
 ## CLI Commands
 
 ```bash

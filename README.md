@@ -1,20 +1,39 @@
-# Platform Cortex
+# Cortex
 
 Structured architectural metadata extraction, aggregation, and MCP serving for cross-repo AI agent context.
 
-## What is Platform Cortex?
+> 💡 **New here?** Start with the [Vision & Value](docs/presentation.md) document — it explains the problem we're solving, the guiding principles behind Cortex, and why this is a key component of any real agentic AI solution.
 
-Platform Cortex extracts structured metadata from source repositories, aggregates it into a queryable graph, and exposes it to AI agents via an MCP server. It answers questions like:
+## What is Cortex?
 
-- "Which services are involved in the payment flow?"
-- "Does the backend expose a login endpoint?"
-- "What are the dependencies of the Android app?"
+Cortex is a **living architectural knowledge graph** — the foundational context layer that makes AI agents reliable on a real platform.
+
+AI agents are only as good as the context they receive. Static context packs, Confluence pages, and architecture docs get outdated the moment code is merged. Without current, accurate architectural knowledge, agents hallucinate: they call deprecated endpoints, miss inter-service dependencies, and break contracts they never knew existed. Cortex solves this by going straight to the **sources of truth**.
+
+### Architecture, Not Code
+
+Cortex is not a code indexer. It operates at a **layer above the code**, extracting the architectural signal that matters for decision-making — what modules exist, how they depend on each other, what endpoints a service exposes, what Kafka topics it produces and consumes, what DTOs define its contracts, and how services communicate across the platform. Agents get the structural understanding they need, without drowning in implementation details.
+
+### Sources of Truth
+
+Cortex derives its knowledge only from authoritative sources:
+
+- **📦 The Code** *(fully implemented)* — Deterministic parsing of Android, iOS, and Spring Boot repositories. No LLMs, no guessing — exactly what the code says.
+- **🌐 Live APIs** *(partially implemented)* — Swagger/OpenAPI contract references extracted and surfaced via the MCP server.
+- **📊 Production Usage** *(next frontier)* — Observability data (e.g. Datadog) representing real traffic patterns and actual runtime behavior.
 
 ### Three components
 
-1. **Extractor** (`cortex` CLI) — Parses build files, manifests, and source code from each repo (using service metadata from the repos config) to produce normalized per-service metadata.
-2. **Pipeline** — Azure DevOps scheduled job that runs extraction across all repos and writes results to cloud storage.
-3. **MCP Server** — Exposes 4 query tools over the aggregated graph for consumption by AI agents.
+1. **Extractor** (`cortex` CLI) — Parses build files, manifests, and source code from each repo to produce normalized architectural metadata per service.
+2. **Pipeline** — Azure DevOps scheduled job that runs extraction across all repos and writes results to cloud storage, keeping the graph always up-to-date.
+3. **MCP Server** — Exposes 4 query tools over the aggregated graph for consumption by any MCP-compatible AI agent.
+
+It answers questions like:
+
+- "Which services are involved in the payment flow?"
+- "Does the backend expose a login endpoint?"
+- "What Kafka topics does the orders service produce?"
+- "What are the module dependencies of the Android app?"
 
 ## Quick Start
 

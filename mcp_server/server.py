@@ -645,6 +645,17 @@ class CortexMCPServer:
             enable_dns_rebinding_protection=False,
         )
 
+        # Cloud Run is serverless — each instance has its own in-memory session
+        # store and there is no shared memory between instances. In stateful mode,
+        # a session created on Instance A is unknown to Instance B, causing every
+        # request routed to a different instance to fail with:
+        #   HTTP 404 / {"error": {"message": "Session not found"}}
+        # Stateless mode creates a fresh transport per request — no session ID is
+        # issued or required. This is the correct mode for serverless deployments.
+        # Security is unaffected: Cloud Run IAM enforces authentication on every
+        # request at the infrastructure layer before the container is reached.
+        self._mcp.settings.stateless_http = True
+
         # FastMCP exposes a ready-made Starlette app for streamable-http.
         # It handles session management, SSE streaming, and JSON responses.
         starlette_app = self._mcp.streamable_http_app()
