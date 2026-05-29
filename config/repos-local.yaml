@@ -8,47 +8,6 @@ repos:
   domain: entertainment
   tier: critical
   purpose: Main Android LA Clippers application.
-- name: fan-app-ios
-  path: .repos/fan-app-ios
-  type: ios
-  owner: team-mobile
-  domain: entertainment
-  tier: critical
-  purpose: LA Clippers FanApp — fan-facing iOS application for ticketing, loyalty,
-    payments, suite management and arena experiences.
-  keywords:
-  - ios
-  - fanapp
-  - clippers
-  - ticketing
-  - loyalty
-  extractor_hints:
-    project_root: App
-    target: LaClippers
-- name: staff-app-ios
-  path: .repos/fan-app-ios
-  type: ios
-  owner: team-mobile
-  domain: entertainment
-  tier: critical
-  purpose: LA Clippers StaffApp — internal iOS application for staff and operations
-    personnel at Intuit Dome.
-  keywords:
-  - ios
-  - staffapp
-  - clippers
-  - operations
-  extractor_hints:
-    project_root: App
-    target: LACStaff
-- name: identity-microservice
-  path: .repos/identity-microservice
-  type: backend-java
-  owner: team-backend
-  domain: identity
-  tier: critical
-  purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
-  swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
 - name: accesscontrol-microservice
   path: .repos/accesscontrol-microservice
   type: backend-java
@@ -57,71 +16,22 @@ repos:
   tier: critical
   purpose: Access validation, parking events, AiFi zone detection
   swagger_url: https://asvaw3devaccesscontrol.azurewebsites.net/accesscontrol/v3/api-docs
-- name: payments-microservice
-  path: .repos/payments-microservice
+- name: accesscontrol-processor-microservice
+  path: .repos/accesscontrol-processor-microservice
   type: backend-java
   owner: team-backend
-  domain: payments
+  domain: access-control
   tier: critical
-  purpose: Payment methods, transactions, invoices, chargebacks
-  swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
-- name: frictionless-commerce-microservice
-  path: .repos/frictionless-commerce-microservice
+  purpose: Access validation, parking events, AiFi zone detection
+  swagger_url: https://asvaw3devaccesscontrolprocessor.azurewebsites.net/accesscontrolprocessor/v3/api-docs
+- name: admin-tool
+  path: .repos/admin-tool
   type: backend-java
   owner: team-backend
-  domain: commerce
-  tier: critical
-  purpose: Frictionless checkout sessions, AiFi integration, POS
-  swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
-- name: loyalty-microservice
-  path: .repos/loyalty-microservice
-  type: backend-java
-  owner: team-backend
-  domain: loyalty
+  domain: access-control
   tier: standard
-  purpose: Loyalty points, rewards, achievements, leaderboards, badges
-  swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
-- name: loyalty-sa-microservice
-  path: .repos/loyalty-sa-microservice
-  type: backend-java
-  owner: team-backend
-  domain: loyalty
-  tier: standard
-  purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
-  swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
-- name: entitlements-microservice
-  path: .repos/entitlements-microservice
-  type: backend-java
-  owner: team-backend
-  domain: entitlements
-  tier: critical
-  purpose: Entitlement assignment, redemption, transfer, expiration
-  swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
-- name: suites-microservice
-  path: .repos/suites-microservice
-  type: backend-java
-  owner: team-backend
-  domain: suites
-  tier: critical
-  purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
-  swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
-- name: ticketing-microservice
-  path: .repos/ticketing-microservice
-  type: backend-java
-  owner: team-backend
-  domain: ticketing
-  tier: critical
-  purpose: Ticketing management, seat inventory, reservations, event access
-  swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
-- name: locations-microservice
-  path: .repos/locations-microservice
-  type: backend-java
-  owner: team-backend
-  domain: locations
-  tier: critical
-  purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP
-    device management, IoT device twins sync
-  swagger_url: https://asvaw3devlocationsmicroservice.azurewebsites.net/locationsmicroservice/v3/api-docs
+  purpose: Backend for Frontend (BFF) service for the admin tool web app
+  swagger_url: https://asvaw3devadmintool.azurewebsites.net/admintool/v3/api-docs
 - name: ambientcontrol-microservice
   path: .repos/ambientcontrol-microservice
   type: backend-java
@@ -172,6 +82,14 @@ repos:
   tier: standard
   purpose: Data management service — aggregation, transformation, and reporting pipelines
   swagger_url: https://asvaw3devdatams.azurewebsites.net/datams/v3/api-docs
+- name: entitlements-microservice
+  path: .repos/entitlements-microservice
+  type: backend-java
+  owner: team-backend
+  domain: entitlements
+  tier: critical
+  purpose: Entitlement assignment, redemption, transfer, expiration
+  swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
 - name: evcharge-microservice
   path: .repos/evcharge-microservice
   type: backend-java
@@ -180,6 +98,30 @@ repos:
   tier: standard
   purpose: EV charging station management, session tracking, and billing integration
   swagger_url: https://asvaw3devevcharge.azurewebsites.net/evcharge/v3/api-docs
+- name: frictionless-commerce-microservice
+  path: .repos/frictionless-commerce-microservice
+  type: backend-java
+  owner: team-backend
+  domain: commerce
+  tier: critical
+  purpose: Frictionless checkout sessions, AiFi integration, POS
+  swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
+- name: geoinfo-microservice
+  path: .repos/geoinfo-microservice
+  type: backend-java
+  owner: team-backend
+  domain: geo-info
+  tier: standard
+  purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
+  swagger_url: https://asvaw3devgeoinfo.azurewebsites.net/geoinfo/v3/api-docs
+- name: identity-microservice
+  path: .repos/identity-microservice
+  type: backend-java
+  owner: team-backend
+  domain: identity
+  tier: critical
+  purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
+  swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
 - name: incident-microservice
   path: .repos/incident-microservice
   type: backend-java
@@ -188,6 +130,31 @@ repos:
   tier: standard
   purpose: Incident reporting, tracking, and escalation for arena operations
   swagger_url: https://asvaw3devincident.azurewebsites.net/incident/v3/api-docs
+- name: locations-microservice
+  path: .repos/locations-microservice
+  type: backend-java
+  owner: team-backend
+  domain: locations
+  tier: critical
+  purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP
+    device management, IoT device twins sync
+  swagger_url: https://asvaw3devlocationsmicroservice.azurewebsites.net/locationsmicroservice/v3/api-docs
+- name: loyalty-microservice
+  path: .repos/loyalty-microservice
+  type: backend-java
+  owner: team-backend
+  domain: loyalty
+  tier: standard
+  purpose: Loyalty points, rewards, achievements, leaderboards, badges
+  swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
+- name: loyalty-sa-microservice
+  path: .repos/loyalty-sa-microservice
+  type: backend-java
+  owner: team-backend
+  domain: loyalty
+  tier: standard
+  purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
+  swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
 - name: nba-microservice
   path: .repos/nba-microservice
   type: backend-java
@@ -215,6 +182,14 @@ repos:
   purpose: Offline cache management — pre-computation and serving of data for low-latency
     mobile access
   swagger_url: https://asvaw3devofflinecache.azurewebsites.net/offlinecache/v3/api-docs
+- name: payments-microservice
+  path: .repos/payments-microservice
+  type: backend-java
+  owner: team-backend
+  domain: payments
+  tier: critical
+  purpose: Payment methods, transactions, invoices, chargebacks
+  swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
 - name: preferences-microservice
   path: .repos/preferences-microservice
   type: backend-java
@@ -269,3 +244,52 @@ repos:
   purpose: Staff profile management, shift scheduling, role assignment, and internal
     communications
   swagger_url: https://asvaw3devstaff.azurewebsites.net/staff/v3/api-docs
+- name: suites-microservice
+  path: .repos/suites-microservice
+  type: backend-java
+  owner: team-backend
+  domain: suites
+  tier: critical
+  purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
+  swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
+- name: ticketing-microservice
+  path: .repos/ticketing-microservice
+  type: backend-java
+  owner: team-backend
+  domain: ticketing
+  tier: critical
+  purpose: Ticketing management, seat inventory, reservations, event access
+  swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
+- name: fan-app-ios
+  path: .repos/fan-app-ios
+  type: ios
+  owner: team-mobile
+  domain: entertainment
+  tier: critical
+  purpose: LA Clippers FanApp — fan-facing iOS application for ticketing, loyalty,
+    payments, suite management and arena experiences.
+  keywords:
+  - ios
+  - fanapp
+  - clippers
+  - ticketing
+  - loyalty
+  extractor_hints:
+    project_root: App
+    target: LaClippers
+- name: staff-app-ios
+  path: .repos/fan-app-ios
+  type: ios
+  owner: team-mobile
+  domain: entertainment
+  tier: critical
+  purpose: LA Clippers StaffApp — internal iOS application for staff and operations
+    personnel at Intuit Dome.
+  keywords:
+  - ios
+  - staffapp
+  - clippers
+  - operations
+  extractor_hints:
+    project_root: App
+    target: LACStaff

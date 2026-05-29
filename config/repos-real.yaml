@@ -23,59 +23,12 @@ repos:
     tier: critical
     purpose: Main Android LA Clippers application.
 
-  # The iOS repo contains a single Xcode project (App/LaLiga.xcodeproj) with two
-  # app targets: LaClippers (FanApp) and LACStaff (StaffApp). We configure them as
-  # separate Cortex services using extractor_hints.project_root + extractor_hints.target
-  # so each gets its own scoped manifest.
-
-  - name: fan-app-ios
-    url: https://IntuitDome@dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
-    type: ios
-    owner: team-mobile
-    domain: entertainment
-    tier: critical
-    purpose: LA Clippers FanApp — fan-facing iOS application for ticketing, loyalty, payments, suite management and arena experiences.
-    keywords:
-      - ios
-      - fanapp
-      - clippers
-      - ticketing
-      - loyalty
-    extractor_hints:
-      project_root: "App"
-      target: "LaClippers"
-
-  - name: staff-app-ios
-    url: https://IntuitDome@dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
-    type: ios
-    owner: team-mobile
-    domain: entertainment
-    tier: critical
-    purpose: LA Clippers StaffApp — internal iOS application for staff and operations personnel at Intuit Dome.
-    keywords:
-      - ios
-      - staffapp
-      - clippers
-      - operations
-    extractor_hints:
-      project_root: "App"
-      target: "LACStaff"
-
   # ---------------------------------------------------------------------------
   # IntuitDome backend microservices — Java 17 / Spring Boot 3.x / Gradle
   #
   # Swagger URL formula (dev environment):
   #   https://asv{region}dev{webapp_name}.azurewebsites.net/{webapp_name}/v3/api-docs
   # ---------------------------------------------------------------------------
-
-  - name: identity-microservice
-    url: https://dev.azure.com/IntuitDome/identity-microservice/_git/identity-microservice
-    type: backend-java
-    owner: team-backend
-    domain: identity
-    tier: critical
-    purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
-    swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
 
   - name: accesscontrol-microservice
     url: https://dev.azure.com/IntuitDome/accesscontrol-microservice/_git/accesscontrol-microservice
@@ -86,77 +39,23 @@ repos:
     purpose: Access validation, parking events, AiFi zone detection
     swagger_url: https://asvaw3devaccesscontrol.azurewebsites.net/accesscontrol/v3/api-docs
 
-  - name: payments-microservice
-    url: https://dev.azure.com/IntuitDome/payments-microservice/_git/payments-microservice
+  - name: accesscontrol-processor-microservice
+    url: https://dev.azure.com/IntuitDome/accesscontrol-microservice/_git/accesscontrol-processor-microservice
     type: backend-java
     owner: team-backend
-    domain: payments
+    domain: access-control
     tier: critical
-    purpose: Payment methods, transactions, invoices, chargebacks
-    swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
+    purpose: Access event persistence, historical event sync, account anonymization, anti-spoofing alerts, biometric data cleanup
+    swagger_url: https://asvaw3devaccesscontrolprocessor.azurewebsites.net/accesscontrolprocessor/v3/api-docs
 
-  - name: frictionless-commerce-microservice
-    url: https://dev.azure.com/IntuitDome/frictionless-commerce-microservice/_git/frictionless-commerce-microservice
+  - name: admin-tool
+    url: https://dev.azure.com/IntuitDome/admin-tool/_git/admin-tool-back
     type: backend-java
     owner: team-backend
-    domain: commerce
-    tier: critical
-    purpose: Frictionless checkout sessions, AiFi integration, POS
-    swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
-
-  - name: loyalty-microservice
-    url: https://dev.azure.com/IntuitDome/loyalty-microservice/_git/loyalty-microservice
-    type: backend-java
-    owner: team-backend
-    domain: loyalty
+    domain: access-control
     tier: standard
-    purpose: Loyalty points, rewards, achievements, leaderboards, badges
-    swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
-
-  - name: loyalty-sa-microservice
-    url: https://dev.azure.com/IntuitDome/loyalty-sa-microservice/_git/loyalty-sa-microservice
-    type: backend-java
-    owner: team-backend
-    domain: loyalty
-    tier: standard
-    purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
-    swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
-
-  - name: entitlements-microservice
-    url: https://dev.azure.com/IntuitDome/entitlements-microservice/_git/entitlements-microservice
-    type: backend-java
-    owner: team-backend
-    domain: entitlements
-    tier: critical
-    purpose: Entitlement assignment, redemption, transfer, expiration
-    swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
-
-  - name: suites-microservice
-    url: https://dev.azure.com/IntuitDome/suites-microservice/_git/suites-microservice
-    type: backend-java
-    owner: team-backend
-    domain: suites
-    tier: critical
-    purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
-    swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
-
-  - name: ticketing-microservice
-    url: https://dev.azure.com/IntuitDome/_git/ticketing-microservice
-    type: backend-java
-    owner: team-backend
-    domain: ticketing
-    tier: critical
-    purpose: Ticketing management, seat inventory, reservations, event access
-    swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
-
-  - name: locations-microservice
-    url: https://dev.azure.com/IntuitDome/locations-microservice/_git/locations-microservice
-    type: backend-java
-    owner: team-backend
-    domain: locations
-    tier: critical
-    purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP device management, IoT device twins sync
-    swagger_url: https://asvaw3devlocationsmicroservice.azurewebsites.net/locationsmicroservice/v3/api-docs
+    purpose: Admin portal BFF — user/staff/role management, access control, suites, tickets, events, device (IDAP) management, entitlements, notifications, venue configuration
+    swagger_url: https://asvaw3devadmintool.azurewebsites.net/admintool/v3/api-docs
 
   - name: ambientcontrol-microservice
     url: https://dev.azure.com/IntuitDome/ambient-control-microservice/_git/ambient-control-microservice
@@ -212,6 +111,15 @@ repos:
     purpose: Data management service — aggregation, transformation, and reporting pipelines
     swagger_url: https://asvaw3devdatams.azurewebsites.net/datams/v3/api-docs
 
+  - name: entitlements-microservice
+    url: https://dev.azure.com/IntuitDome/entitlements-microservice/_git/entitlements-microservice
+    type: backend-java
+    owner: team-backend
+    domain: entitlements
+    tier: critical
+    purpose: Entitlement assignment, redemption, transfer, expiration
+    swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
+
   - name: evcharge-microservice
     url: https://dev.azure.com/IntuitDome/ev-charge-microservice/_git/ev-charge-microservice
     type: backend-java
@@ -221,6 +129,33 @@ repos:
     purpose: EV charging station management, session tracking, and billing integration
     swagger_url: https://asvaw3devevcharge.azurewebsites.net/evcharge/v3/api-docs
 
+  - name: frictionless-commerce-microservice
+    url: https://dev.azure.com/IntuitDome/frictionless-commerce-microservice/_git/frictionless-commerce-microservice
+    type: backend-java
+    owner: team-backend
+    domain: commerce
+    tier: critical
+    purpose: Frictionless checkout sessions, AiFi integration, POS
+    swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
+
+  - name: geoinfo-microservice
+    url: https://dev.azure.com/IntuitDome/geoinfo-microservice/_git/geoinfo-microservice
+    type: backend-java
+    owner: team-backend
+    domain: geo-info
+    tier: standard
+    purpose: ZIP/postal code country validation via Google Maps Geocoding API with Redis caching
+    swagger_url: https://asvaw3devgeoinfo.azurewebsites.net/geoinfo/v3/api-docs
+
+  - name: identity-microservice
+    url: https://dev.azure.com/IntuitDome/identity-microservice/_git/identity-microservice
+    type: backend-java
+    owner: team-backend
+    domain: identity
+    tier: critical
+    purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
+    swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
+
   - name: incident-microservice
     url: https://dev.azure.com/IntuitDome/incidents-microservice/_git/incidents-microservice
     type: backend-java
@@ -229,6 +164,33 @@ repos:
     tier: standard
     purpose: Incident reporting, tracking, and escalation for arena operations
     swagger_url: https://asvaw3devincident.azurewebsites.net/incident/v3/api-docs
+
+  - name: locations-microservice
+    url: https://dev.azure.com/IntuitDome/locations-microservice/_git/locations-microservice
+    type: backend-java
+    owner: team-backend
+    domain: locations
+    tier: critical
+    purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP device management, IoT device twins sync
+    swagger_url: https://asvaw3devlocationsmicroservice.azurewebsites.net/locationsmicroservice/v3/api-docs
+
+  - name: loyalty-microservice
+    url: https://dev.azure.com/IntuitDome/loyalty-microservice/_git/loyalty-microservice
+    type: backend-java
+    owner: team-backend
+    domain: loyalty
+    tier: standard
+    purpose: Loyalty points, rewards, achievements, leaderboards, badges
+    swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
+
+  - name: loyalty-sa-microservice
+    url: https://dev.azure.com/IntuitDome/loyalty-sa-microservice/_git/loyalty-sa-microservice
+    type: backend-java
+    owner: team-backend
+    domain: loyalty
+    tier: standard
+    purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
+    swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
 
   - name: nba-microservice
     url: https://dev.azure.com/IntuitDome/nba-microservice/_git/nba-microservice
@@ -256,6 +218,15 @@ repos:
     tier: standard
     purpose: Offline cache management — pre-computation and serving of data for low-latency mobile access
     swagger_url: https://asvaw3devofflinecache.azurewebsites.net/offlinecache/v3/api-docs
+
+  - name: payments-microservice
+    url: https://dev.azure.com/IntuitDome/payments-microservice/_git/payments-microservice
+    type: backend-java
+    owner: team-backend
+    domain: payments
+    tier: critical
+    purpose: Payment methods, transactions, invoices, chargebacks
+    swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
 
   - name: preferences-microservice
     url: https://dev.azure.com/IntuitDome/preferences-microservice/_git/preferences-microservice
@@ -310,3 +281,59 @@ repos:
     tier: standard
     purpose: Staff profile management, shift scheduling, role assignment, and internal communications
     swagger_url: https://asvaw3devstaff.azurewebsites.net/staff/v3/api-docs
+
+  - name: suites-microservice
+    url: https://dev.azure.com/IntuitDome/suites-microservice/_git/suites-microservice
+    type: backend-java
+    owner: team-backend
+    domain: suites
+    tier: critical
+    purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
+    swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
+
+  - name: ticketing-microservice
+    url: https://dev.azure.com/IntuitDome/_git/ticketing-microservice
+    type: backend-java
+    owner: team-backend
+    domain: ticketing
+    tier: critical
+    purpose: Ticketing management, seat inventory, reservations, event access
+    swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
+
+  # The iOS repo contains a single Xcode project (App/LaLiga.xcodeproj) with two
+  # app targets: LaClippers (FanApp) and LACStaff (StaffApp). We configure them as
+  # separate Cortex services using extractor_hints.project_root + extractor_hints.target
+  # so each gets its own scoped manifest.
+
+  - name: fan-app-ios
+    url: https://IntuitDome@dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
+    type: ios
+    owner: team-mobile
+    domain: entertainment
+    tier: critical
+    purpose: LA Clippers FanApp — fan-facing iOS application for ticketing, loyalty, payments, suite management and arena experiences.
+    keywords:
+      - ios
+      - fanapp
+      - clippers
+      - ticketing
+      - loyalty
+    extractor_hints:
+      project_root: "App"
+      target: "LaClippers"
+
+  - name: staff-app-ios
+    url: https://IntuitDome@dev.azure.com/IntuitDome/FanApp/_git/mobile-apps-ios
+    type: ios
+    owner: team-mobile
+    domain: entertainment
+    tier: critical
+    purpose: LA Clippers StaffApp — internal iOS application for staff and operations personnel at Intuit Dome.
+    keywords:
+      - ios
+      - staffapp
+      - clippers
+      - operations
+    extractor_hints:
+      project_root: "App"
+      target: "LACStaff"
