@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from cortex.storage import LocalStorageBackend
-from mcp_server.server import CortexMCPServer, _score_service, _tokenize
+from mcp_server.server import CortexMCPServer, _score_service, _tokenize, _tokenize_identifier
 
 
 @pytest.fixture
@@ -353,6 +353,125 @@ class TestScoreService:
         assert score == 0
         assert matched == []
 
+    def test_endpoint_path_match(self) -> None:
+        """Service with matching endpoint path tokens gets scored."""
+        svc = {
+            "name": "geoinfo-microservice",
+            "keywords": [],
+            "purpose": "Geo info service",
+            "domain": "geo-info",
+            "endpoints": [
+                {
+                    "method": "POST",
+                    "path": "/v1/zipcode/validate-country",
+                    "request_body": {"type": "ValidateCountryRequest"},
+                    "response": {"type": "ValidateCountryResponse"},
+                }
+            ],
+        }
+        score, matched = _score_service(svc, {"zipcode"})
+        assert score > 0
+        assert "endpoint_paths" in matched
+
+    def test_endpoint_dto_match(self) -> None:
+        """Service with matching DTO name tokens gets scored."""
+        svc = {
+            "name": "some-service",
+            "keywords": [],
+            "purpose": "Some service",
+            "domain": "misc",
+            "endpoints": [
+                {
+                    "method": "POST",
+                    "path": "/api/orders",
+                    "request_body": {"type": "CreateOrderRequest"},
+                    "response": {"type": "OrderDto"},
+                }
+            ],
+        }
+        score, matched = _score_service(svc, {"order"})
+        assert score > 0
+        assert "endpoint_dtos" in matched
+
+    def test_no_endpoints_no_crash(self) -> None:
+        """Service without endpoints does not crash and gets no endpoint score."""
+        svc = {
+            "name": "mobile-app",
+            "keywords": [],
+            "purpose": "Mobile app",
+            "domain": "mobile",
+        }
+        score, matched = _score_service(svc, {"zipcode"})
+        assert "endpoint_paths" not in matched
+        assert "endpoint_dtos" not in matched
+
+    def test_endpoint_null_path_handled(self) -> None:
+        """Endpoint with None path does not crash."""
+        svc = {
+            "name": "some-service",
+            "keywords": [],
+            "purpose": "",
+            "domain": "",
+            "endpoints": [{"method": "GET", "path": None}],
+        }
+        score, matched = _score_service(svc, {"zipcode"})
+        assert "endpoint_paths" not in matched
+
+    def test_endpoint_no_request_body_or_response(self) -> None:
+        """Endpoint without request_body/response does not crash."""
+        svc = {
+            "name": "some-service",
+            "keywords": [],
+            "purpose": "",
+            "domain": "",
+            "endpoints": [{"method": "GET", "path": "/health"}],
+        }
+        score, matched = _score_service(svc, {"health"})
+        assert "endpoint_paths" in matched
+        assert "endpoint_dtos" not in matched
+
+
+class TestTokenizeIdentifier:
+    """Tests for _tokenize_identifier helper."""
+
+    def test_camel_case_splitting(self) -> None:
+        tokens = _tokenize_identifier("ValidateCountryRequest")
+        assert "validate" in tokens
+        assert "country" in tokens
+        assert "request" not in tokens  # filtered as noise
+
+    def test_path_splitting(self) -> None:
+        tokens = _tokenize_identifier("/v1/zipcode/validate-country")
+        assert "zipcode" in tokens
+        assert "validate" in tokens
+        assert "country" in tokens
+        assert "v1" not in tokens  # filtered as noise
+
+    def test_empty_string(self) -> None:
+        assert _tokenize_identifier("") == set()
+
+    def test_acronym_handling(self) -> None:
+        tokens = _tokenize_identifier("NBAWebClient")
+        assert "nba" in tokens
+        assert "web" in tokens
+        assert "client" in tokens
+
+    def test_noise_words_filtered(self) -> None:
+        tokens = _tokenize_identifier("OrderResponseDto")
+        assert "order" in tokens
+        assert "response" not in tokens
+        assert "dto" not in tokens
+
+    def test_underscore_splitting(self) -> None:
+        tokens = _tokenize_identifier("order_status_update")
+        assert "order" in tokens
+        assert "status" in tokens
+        assert "update" in tokens
+
+    def test_single_char_filtered(self) -> None:
+        tokens = _tokenize_identifier("a/b/c")
+        assert len(tokens) == 0
+
 
 class TestFindRelevantServices:
     """Tests for find_relevant_services tool."""
@@ -408,6 +527,114 @@ class TestFindRelevantServices:
             )
         )
         assert result["candidates"] == []
+
+    def test_find_service_by_endpoint_path(self, tmp_path: Path) -> None:
+        """Service is found when query matches an endpoint path token."""
+        storage = LocalStorageBackend(root=tmp_path)
+        graph = {
+            "services": [
+                {
+                    "name": "geoinfo-microservice",
+                    "type": "backend-java",
+                    "owner": "team-geo",
+                    "domain": "geo-info",
+                    "tier": "standard",
+                    "purpose": "Geographic information service",
+                    "keywords": ["geo", "location"],
+                    "endpoints": [
+                        {
+                            "method": "POST",
+                            "path": "/v1/zipcode/validate-country",
+                            "tags": ["zipcode"],
+                            "request_body": {
+                                "type": "ValidateCountryRequest",
+                                "required": True,
+                            },
+                            "response": {
+                                "type": "ValidateCountryResponse",
+                                "wrapper": None,
+                            },
+                        }
+                    ],
+                },
+                {
+                    "name": "unrelated-service",
+                    "type": "backend-java",
+                    "owner": "team-other",
+                    "domain": "other",
+                    "tier": "standard",
+                    "purpose": "Unrelated service",
+                    "keywords": [],
+                    "endpoints": [],
+                },
+            ],
+            "communication": {"edges": []},
+            "failed_extractions": [],
+            "metadata": {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "version": "1.0.0",
+                "service_count": 2,
+            },
+        }
+        storage.write_json("graph/latest.json", graph)
+        server = CortexMCPServer(storage=storage)
+
+        result = asyncio.run(
+            _call_tool(
+                server,
+                "find_relevant_services",
+                {"task_description": "zipcode"},
+            )
+        )
+        candidates = result["candidates"]
+        names = [c["name"] for c in candidates]
+        assert "geoinfo-microservice" in names
+        assert "unrelated-service" not in names
+
+    def test_find_service_by_dto_name(self, tmp_path: Path) -> None:
+        """Service is found when query matches a DTO name token."""
+        storage = LocalStorageBackend(root=tmp_path)
+        graph = {
+            "services": [
+                {
+                    "name": "payment-service",
+                    "type": "backend-java",
+                    "owner": "team-pay",
+                    "domain": "payments",
+                    "tier": "critical",
+                    "purpose": "Handles transactions",
+                    "keywords": [],
+                    "endpoints": [
+                        {
+                            "method": "POST",
+                            "path": "/api/v1/charge",
+                            "request_body": {"type": "ChargeWalletRequest"},
+                            "response": {"type": "WalletBalanceResponse"},
+                        }
+                    ],
+                },
+            ],
+            "communication": {"edges": []},
+            "failed_extractions": [],
+            "metadata": {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "version": "1.0.0",
+                "service_count": 1,
+            },
+        }
+        storage.write_json("graph/latest.json", graph)
+        server = CortexMCPServer(storage=storage)
+
+        result = asyncio.run(
+            _call_tool(
+                server,
+                "find_relevant_services",
+                {"task_description": "wallet"},
+            )
+        )
+        candidates = result["candidates"]
+        names = [c["name"] for c in candidates]
+        assert "payment-service" in names
 
 
 class TestListEndpoints:

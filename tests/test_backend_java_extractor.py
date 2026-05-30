@@ -3833,3 +3833,312 @@ data class OrderDto(
         # Type6 and Type7 should NOT be resolved (depth limit reached)
         assert "Type6" not in schemas, "Type6 should be blocked by depth limit"
         assert "Type7" not in schemas, "Type7 should be blocked by depth limit"
+
+
+# ---------------------------------------------------------------------------
+# TestStripAnnotations
+# ---------------------------------------------------------------------------
+
+
+class TestStripAnnotations:
+    """Tests for BackendJavaExtractor._strip_annotations()."""
+
+    def test_simple_annotation_no_parens(self):
+        """@Hidden is removed, preserving the rest."""
+        assert (BackendJavaExtractor._strip_annotations(
+            "@Hidden ResponseEntity<Foo>") == "ResponseEntity<Foo>")
+
+    def test_annotation_with_simple_parens(self):
+        """@RequestBody is removed."""
+        assert (BackendJavaExtractor._strip_annotations(
+            '@RequestBody OrderDto dto').strip() == "OrderDto dto")
+
+    def test_annotation_with_string_containing_parens(self):
+        """Parens inside string literals don't break the parser."""
+        text = '@Schema(description = "Incident Id.", example = "eyJ)test") String value'
+        result = BackendJavaExtractor._strip_annotations(text)
+        assert result.strip() == "String value"
+
+    def test_annotation_with_nested_parens(self):
+        """Nested parentheses are handled correctly."""
+        text = '@Annotation(value = foo(bar())) String x'
+        result = BackendJavaExtractor._strip_annotations(text)
+        assert result.strip() == "String x"
+
+    def test_annotation_with_escaped_quotes(self):
+        """Escaped quotes inside strings don't break the parser."""
+        text = r'@Schema(description = "say \"hello\"") String x'
+        result = BackendJavaExtractor._strip_annotations(text)
+        assert result.strip() == "String x"
+
+    def test_multiple_annotations(self):
+        """Multiple annotations are all removed."""
+        text = "@NotNull @Size(min = 1) @Valid CreateOrderRequest request"
+        result = BackendJavaExtractor._strip_annotations(text)
+        assert result.strip() == "CreateOrderRequest request"
+
+    def test_multiline_annotation(self):
+        """Multi-line annotations are fully removed."""
+        text = ('@Schema(\n        description = "channel",'
+                '\n        nullable = true)\n    String channel')
+        result = BackendJavaExtractor._strip_annotations(text)
+        assert "String" in result
+        assert "channel" in result
+        assert "@Schema" not in result
+        assert "description" not in result
+
+    def test_no_annotations(self):
+        """Text without annotations is returned unchanged."""
+        text = "ResponseEntity<OrderDto> createOrder"
+        assert BackendJavaExtractor._strip_annotations(text) == text
+
+    def test_annotation_at_sign_in_email(self):
+        """@ in email-like strings is not treated as annotation start."""
+        # The @ must be preceded by a non-alnum char to be treated as annotation
+        text = 'user@example.com String x'
+        result = BackendJavaExtractor._strip_annotations(text)
+        # The @example part should NOT be stripped since it's preceded by 'r' (alnum)
+        assert "user" in result
+
+    def test_preauthorize_with_complex_content(self):
+        """@PreAuthorize with complex SpEL expression is fully removed."""
+        text = """@PreAuthorize("hasRole('ROLE_INTERNAL')")
+    ResponseEntity<LocationDto> getLocation"""
+        result = BackendJavaExtractor._strip_annotations(text)
+        assert "ResponseEntity<LocationDto>" in result
+        assert "getLocation" in result
+        assert "@PreAuthorize" not in result
+        assert "hasRole" not in result
+
+
+# ---------------------------------------------------------------------------
+# TestIsValidDtoName
+# ---------------------------------------------------------------------------
+
+
+class TestIsValidDtoName:
+    """Tests for BackendJavaExtractor._is_valid_dto_name()."""
+
+    def test_valid_dto_names(self):
+        """Standard DTO class names are accepted."""
+        for name in ["OrderDto", "CreateOrderRequest", "SeatEvent", "UserIdentifier"]:
+            assert BackendJavaExtractor._is_valid_dto_name(name), f"{name} should be valid"
+
+    def test_primitive_types_rejected(self):
+        """Primitive and standard library types are rejected."""
+        for name in ["String", "Integer", "Boolean", "List", "Map", "UUID"]:
+            assert not BackendJavaExtractor._is_valid_dto_name(name), f"{name} should be rejected"
+
+    def test_response_wrappers_rejected(self):
+        """Response wrapper types are rejected."""
+        for name in ["ResponseEntity", "Mono", "Flux", "CompletableFuture"]:
+            assert not BackendJavaExtractor._is_valid_dto_name(name), f"{name} should be rejected"
+
+    def test_annotation_names_rejected(self):
+        """Known annotation names are rejected."""
+        for name in ["JsonProperty", "Schema", "NotNull", "Override", "Hidden", "Id"]:
+            assert not BackendJavaExtractor._is_valid_dto_name(name), f"{name} should be rejected"
+
+    def test_all_caps_rejected(self):
+        """ALL_CAPS constants are rejected."""
+        for name in ["EXAMPLE_IDS", "MAX_SIZE", "DEFAULT_VALUE"]:
+            assert not BackendJavaExtractor._is_valid_dto_name(name), f"{name} should be rejected"
+
+    def test_single_char_rejected(self):
+        """Single character names are rejected."""
+        assert not BackendJavaExtractor._is_valid_dto_name("T")
+        assert not BackendJavaExtractor._is_valid_dto_name("E")
+
+    def test_empty_rejected(self):
+        """Empty string is rejected."""
+        assert not BackendJavaExtractor._is_valid_dto_name("")
+
+    def test_lowercase_start_rejected(self):
+        """Names starting with lowercase are rejected."""
+        assert not BackendJavaExtractor._is_valid_dto_name("orderDto")
+
+    def test_names_with_special_chars_rejected(self):
+        """Names with brackets or special chars are rejected."""
+        assert not BackendJavaExtractor._is_valid_dto_name("String[]")
+        assert not BackendJavaExtractor._is_valid_dto_name("Map<String")
+
+
+# ---------------------------------------------------------------------------
+# TestBuildClassIndex
+# ---------------------------------------------------------------------------
+
+
+class TestBuildClassIndex:
+    """Tests for BackendJavaExtractor._build_class_index() inner class support."""
+
+    def test_indexes_inner_classes(self, tmp_path):
+        """Inner classes defined inside a file are indexed."""
+        # Create a Java file with an inner class
+        java_dir = tmp_path / "src" / "main" / "java" / "com" / "example"
+        java_dir.mkdir(parents=True)
+        controller_file = java_dir / "SeatController.java"
+        controller_file.write_text('''
+package com.example;
+
+public class SeatController {
+
+    public static class SeatEvent {
+        private String seatId;
+        private String status;
+    }
+
+    public ResponseEntity<SeatEvent> getSeat() {
+        return ResponseEntity.ok(new SeatEvent());
+    }
+}
+''')
+
+        extractor = BackendJavaExtractor()
+        class_index = extractor._build_class_index(tmp_path)
+
+        # SeatController should be indexed by file stem
+        assert "SeatController" in class_index
+        # SeatEvent (inner class) should also be indexed
+        assert "SeatEvent" in class_index
+        assert class_index["SeatEvent"] == controller_file
+
+    def test_file_stem_takes_priority_over_inner(self, tmp_path):
+        """If a file stem matches an inner class name, file stem wins."""
+        java_dir = tmp_path / "src" / "main" / "java" / "com" / "example"
+        java_dir.mkdir(parents=True)
+
+        # Create SeatEvent.java as a standalone file
+        event_file = java_dir / "SeatEvent.java"
+        event_file.write_text('package com.example;\npublic class SeatEvent { }')
+
+        # Create another file that also declares SeatEvent as inner class
+        controller_file = java_dir / "SeatController.java"
+        controller_file.write_text('''
+package com.example;
+public class SeatController {
+    public static class SeatEvent { }
+}
+''')
+
+        extractor = BackendJavaExtractor()
+        class_index = extractor._build_class_index(tmp_path)
+
+        # SeatEvent should point to the standalone file, not the inner class
+        assert class_index["SeatEvent"] == event_file
+
+
+# ---------------------------------------------------------------------------
+# TestEndpointExtractionWithComplexAnnotations
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointExtractionWithComplexAnnotations:
+    """Integration test for endpoint extraction with complex annotations."""
+
+    def test_endpoint_extraction_with_complex_annotations(self, tmp_path):
+        """Endpoints with @PreAuthorize, @Schema, @Hidden annotations extract clean types."""
+        java_dir = tmp_path / "src" / "main" / "java" / "com" / "example"
+        java_dir.mkdir(parents=True)
+
+        controller = java_dir / "IncidentController.java"
+        controller.write_text('''
+package com.example;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/incidents")
+public class IncidentController {
+
+    @PostMapping
+    @PreAuthorize("hasRole('ROLE_ADMIN')")
+    public ResponseEntity<IncidentResponse> createIncident(
+            @Schema(description = "Incident Id.", example = "eyJpdiI6ImFHOVVObmRxV0Z")
+            @JsonProperty("incident_id")
+            @RequestBody IncidentRequest request) {
+        return null;
+    }
+}
+''')
+
+        # Create the DTO files
+        request_file = java_dir / "IncidentRequest.java"
+        request_file.write_text(
+            'package com.example;\n'
+            'public class IncidentRequest { private String name; }')
+
+        response_file = java_dir / "IncidentResponse.java"
+        response_file.write_text(
+            'package com.example;\n'
+            'public class IncidentResponse { private String id; }')
+
+        # Create build.gradle
+        (tmp_path / "build.gradle").write_text("""
+plugins { id 'org.springframework.boot' version '3.1.0' }
+dependencies { implementation 'org.springframework.boot:spring-boot-starter-web' }
+""")
+
+        extractor = BackendJavaExtractor()
+        contracts = extractor.find_api_contracts(tmp_path)
+
+        assert len(contracts) == 1
+        endpoints = contracts[0].endpoints
+        assert len(endpoints) >= 1
+
+        post_endpoint = [e for e in endpoints if e.method == "POST"][0]
+
+        # The response type should be clean — no annotation text
+        if post_endpoint.response:
+            assert "@PreAuthorize" not in (post_endpoint.response.type or "")
+            assert "hasRole" not in (post_endpoint.response.type or "")
+            assert "eyJpdiI6" not in (post_endpoint.response.type or "")
+
+        # The request body type should be clean
+        if post_endpoint.request_body:
+            assert "eyJpdiI6" not in (post_endpoint.request_body.type or "")
+            assert "@Schema" not in (post_endpoint.request_body.type or "")
+            assert "JsonProperty" not in (post_endpoint.request_body.type or "")
+
+
+# ---------------------------------------------------------------------------
+# TestBuildClassIndexCommentStripping
+# ---------------------------------------------------------------------------
+
+
+class TestBuildClassIndexCommentStripping:
+    """Tests that _build_class_index ignores class declarations inside comments."""
+
+    def test_commented_out_classes_not_indexed(self, tmp_path):
+        """Class declarations inside comments are not indexed."""
+        java_dir = tmp_path / "src" / "main" / "java" / "com" / "example"
+        java_dir.mkdir(parents=True)
+        controller_file = java_dir / "MyController.java"
+        controller_file.write_text('''
+package com.example;
+
+// public class CommentedOut { }
+
+/*
+ * public class InBlockComment { }
+ */
+
+/**
+ * public class InJavadoc { }
+ */
+
+public class MyController {
+    public static class RealInner { }
+
+    // public class FakeInner { }
+}
+''')
+
+        extractor = BackendJavaExtractor()
+        class_index = extractor._build_class_index(tmp_path)
+
+        assert "MyController" in class_index
+        assert "RealInner" in class_index
+        assert "CommentedOut" not in class_index
+        assert "InBlockComment" not in class_index
+        assert "InJavadoc" not in class_index
+        assert "FakeInner" not in class_index

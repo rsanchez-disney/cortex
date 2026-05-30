@@ -19,6 +19,7 @@ Extracts:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -95,6 +96,44 @@ _PRIMITIVE_TYPES = frozenset({
     "Optional", "?", "T", "E", "K", "V",
     "MultipartFile", "HttpServletRequest", "HttpServletResponse",
     "InputStream", "OutputStream", "byte[]",
+})
+
+# Known Java/Spring/Lombok annotation names — never treat these as DTO class names
+_KNOWN_ANNOTATION_NAMES = frozenset({
+    "JsonProperty", "JsonIgnore", "JsonFormat", "JsonInclude", "JsonCreator",
+    "JsonValue", "JsonSerialize", "JsonDeserialize", "JsonAlias", "JsonAnySetter",
+    "JsonAnyGetter", "JsonManagedReference", "JsonBackReference", "JsonTypeInfo",
+    "JsonSubTypes", "JsonTypeName", "JsonView", "JsonUnwrapped", "JsonRawValue",
+    "Schema", "ApiModelProperty", "ApiModel", "ApiOperation", "ApiResponse",
+    "ApiResponses", "ApiParam", "ApiImplicitParam", "ApiImplicitParams",
+    "NotNull", "NotBlank", "NotEmpty", "Size", "Min", "Max", "Pattern",
+    "Email", "Valid", "Validated", "Positive", "PositiveOrZero", "Negative",
+    "NegativeOrZero", "Past", "PastOrPresent", "Future", "FutureOrPresent",
+    "Digits", "DecimalMin", "DecimalMax", "AssertTrue", "AssertFalse",
+    "Override", "Deprecated", "SuppressWarnings", "FunctionalInterface",
+    "SafeVarargs", "Retention", "Target", "Documented", "Inherited", "Repeatable",
+    "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping",
+    "PatchMapping", "RequestBody", "PathVariable", "RequestParam", "RequestHeader",
+    "CookieValue", "ModelAttribute", "SessionAttribute", "MatrixVariable",
+    "RestController", "Controller", "Service", "Repository", "Component",
+    "Configuration", "Bean", "Autowired", "Qualifier", "Value", "Primary",
+    "Lazy", "Scope", "Profile", "Conditional", "Import", "ImportResource",
+    "PropertySource", "EnableAutoConfiguration", "SpringBootApplication",
+    "EnableScheduling", "Scheduled", "Async", "EnableAsync",
+    "Transactional", "Modifying", "Query", "Param",
+    "Entity", "Table", "Column", "Id", "GeneratedValue", "ManyToOne",
+    "OneToMany", "ManyToMany", "OneToOne", "JoinColumn", "Embedded",
+    "Embeddable", "MappedSuperclass", "Inheritance", "DiscriminatorColumn",
+    "DiscriminatorValue", "SequenceGenerator", "TableGenerator",
+    "PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed",
+    "Hidden", "Operation", "Parameter", "Parameters",
+    "KafkaListener", "KafkaHandler", "SendTo", "Header", "Payload",
+    "Builder", "Data", "Getter", "Setter", "NoArgsConstructor",
+    "AllArgsConstructor", "RequiredArgsConstructor", "EqualsAndHashCode",
+    "ToString", "Slf4j", "Log4j2", "CommonsLog", "Log",
+    "Generated", "FieldDefaults", "Accessors", "SuperBuilder",
+    "With", "Wither", "Singular", "Delegate", "Cleanup",
+    "SneakyThrows", "Synchronized", "Locked",
 })
 
 # Maximum recursion depth for nested DTO resolution
@@ -375,6 +414,69 @@ class BackendJavaExtractor(Extractor):
         if m:
             return vars_map.get(m.group(1), raw_version)
         return raw_version
+
+    @staticmethod
+    def _walk_annotations(text: str) -> Iterator[tuple[int, int]]:
+        """Yield ``(start, end)`` spans for each Java annotation in *text*.
+
+        Handles balanced parentheses and string literals inside annotation
+        arguments.  Each span covers from the ``@`` through the optional
+        closing ``)`` and any trailing whitespace.
+        """
+        i = 0
+        n = len(text)
+        while i < n:
+            if text[i] == '@' and (i == 0 or not text[i - 1].isalnum()):
+                start = i
+                # Skip @Name
+                i += 1
+                while i < n and (text[i].isalnum() or text[i] == '_' or text[i] == '.'):
+                    i += 1
+                # Check for optional '(' — peek ahead past whitespace
+                j = i
+                while j < n and text[j] in (' ', '\t', '\n', '\r'):
+                    j += 1
+                if j < n and text[j] == '(':
+                    # Has parens — skip whitespace + balanced parens
+                    i = j + 1
+                    depth = 1
+                    in_string = False
+                    string_char: str | None = None
+                    while i < n and depth > 0:
+                        c = text[i]
+                        if in_string:
+                            if c == '\\':
+                                i += 1  # skip escaped char
+                            elif c == string_char:
+                                in_string = False
+                        else:
+                            if c == '"' or c == "'":
+                                in_string = True
+                                string_char = c
+                            elif c == '(':
+                                depth += 1
+                            elif c == ')':
+                                depth -= 1
+                        i += 1
+                    # i is now past the closing paren
+                # Skip trailing whitespace
+                while i < n and text[i] in (' ', '\t', '\n', '\r'):
+                    i += 1
+                yield start, i
+            else:
+                i += 1
+
+    @staticmethod
+    def _strip_annotations(text: str) -> str:
+        """Remove Java annotations from text, handling balanced parens and string literals."""
+        # Build result by copying non-annotation spans
+        result: list[str] = []
+        prev_end = 0
+        for start, end in BackendJavaExtractor._walk_annotations(text):
+            result.append(text[prev_end:start])
+            prev_end = end
+        result.append(text[prev_end:])
+        return ''.join(result)
 
     def _parse_dependencies(
         self, root: Path, gradle_vars: dict[str, str] | None = None
@@ -1037,11 +1139,18 @@ class BackendJavaExtractor(Extractor):
         Returns the signature from return type through closing ')' of parameter list,
         or None if no valid signature is found.
         """
+        # Strip annotations and single-line comments to prevent them from polluting
+        # the return type regex match.  Parameter annotations (@RequestBody, etc.)
+        # are inside the parentheses and will be preserved because we extract the
+        # parameter list from the *original* text below.
+        clean_text = self._strip_annotations(text)
+        clean_text = re.sub(r'//[^\n]*', '', clean_text)  # Remove single-line comments
+        clean_text = clean_text.strip()
+
         # Strategy: scan for the first '(' that's part of a method declaration (not an annotation)
         # Then find the matching ')' using depth counting
 
         # Find method declaration: look for pattern like "public Type method(" or "Type method("
-        # Skip annotation lines
         m = re.search(
             r'(?:(?:public|protected|private|default)\s+)?'  # optional access modifier
             r'(?:static\s+)?'  # optional static
@@ -1049,16 +1158,26 @@ class BackendJavaExtractor(Extractor):
             r'(?:synchronized\s+)?'  # optional synchronized
             r'((?:[\w\.<>,\?\[\]\s]|(?:extends\s)|(?:super\s))+?)\s+'  # return type
             r'(\w+)\s*\(',  # method name + opening paren
-            text,
+            clean_text,
             re.DOTALL,
         )
         if not m:
             return None
 
-        # Get the full match start (including modifiers)
-        paren_start = m.end() - 1  # position of '('
+        method_name = m.group(2)
 
-        # Find matching ')' using depth counting
+        # Locate the method name in the *original* text so that parameter extraction
+        # (which needs @RequestBody, @PathVariable, etc.) works on the unstripped source.
+        # We search for "methodName(" in the original text.
+        orig_pattern = re.search(
+            r'\b' + re.escape(method_name) + r'\s*\(', text
+        )
+        if not orig_pattern:
+            return None
+
+        paren_start = orig_pattern.end() - 1  # position of '(' in original text
+
+        # Find matching ')' using depth counting in the original text
         depth = 0
         for i in range(paren_start, len(text)):
             if text[i] == '(':
@@ -1066,8 +1185,10 @@ class BackendJavaExtractor(Extractor):
             elif text[i] == ')':
                 depth -= 1
                 if depth == 0:
-                    # Return from return type through ')'
-                    return text[m.start(1):i + 1].strip()
+                    # Build the signature: return type from clean_text + params from original text
+                    return_type = m.group(1).strip()
+                    params_with_parens = text[paren_start:i + 1]
+                    return f"{return_type} {method_name}{params_with_parens}"
 
         return None
 
@@ -1186,7 +1307,7 @@ class BackendJavaExtractor(Extractor):
                 remaining = param_token[:m.start()] + rest_after_ann
 
             # Also remove any other annotations (like @Valid, @NotNull, etc.)
-            remaining = re.sub(r'@\w+(?:\([^)]*\))?\s*', '', remaining).strip()
+            remaining = self._strip_annotations(remaining).strip()
 
             # Parse remaining as "Type paramName" or "Type... paramName"
             remaining_tokens = remaining.split()
@@ -1248,7 +1369,7 @@ class BackendJavaExtractor(Extractor):
 
             # Remove other annotations
             remaining = param_token[:m.start()] + rest
-            remaining = re.sub(r'@\w+(?:\([^)]*\))?\s*', '', remaining).strip()
+            remaining = self._strip_annotations(remaining).strip()
 
             # Parse "Type paramName"
             tokens = remaining.split()
@@ -2880,8 +3001,20 @@ class BackendJavaExtractor(Extractor):
             self._resolve_dto_types(new_types, class_index, root, schemas, depth + 1)
 
     def _build_class_index(self, root: Path) -> dict[str, Path]:
-        """Build a mapping of simple class name → source file path."""
-        index: dict[str, Path] = {}
+        """Build a mapping of simple class name → source file path.
+
+        Single-pass: indexes both file-stem class names and inner classes
+        (public/private/static class/enum/record/interface declarations)
+        in one traversal.  Comments are stripped before inner-class scanning
+        to avoid false positives from commented-out declarations.
+        """
+        class_index: dict[str, Path] = {}
+        inner_class_pattern = re.compile(
+            r'(?:public|protected|private|static|\s)+\s+'
+            r'(?:class|enum|record|interface)\s+'
+            r'([A-Z]\w+)',
+            re.MULTILINE,
+        )
         for ext in ("*.java", "*.kt"):
             for f in root.rglob(ext):
                 # Skip excluded directories
@@ -2890,11 +3023,24 @@ class BackendJavaExtractor(Extractor):
                 # Skip test directories
                 if any(part in _TEST_DIR_SEGMENTS for part in f.parts):
                     continue
-                # Extract class name from filename (ClassName.java → ClassName)
+                # Index file-stem class name (first-write wins)
                 class_name = f.stem
-                if class_name not in index:
-                    index[class_name] = f
-        return index
+                if class_name not in class_index:
+                    class_index[class_name] = f
+                # Scan for inner classes in the same pass
+                try:
+                    content = f.read_text(errors="replace")
+                except OSError:
+                    continue
+                # Strip comments to avoid indexing commented-out declarations
+                stripped = re.sub(r'//[^\n]*', '', content)
+                stripped = re.sub(r'/\*.*?\*/', '', stripped, flags=re.DOTALL)
+                for m in inner_class_pattern.finditer(stripped):
+                    inner_name = m.group(1)
+                    if inner_name not in class_index:
+                        class_index[inner_name] = f
+
+        return class_index
 
     def _collect_dto_type_names(self, api_contracts: list[ApiContract]) -> set[str]:
         """Collect all DTO type names referenced in endpoint contracts."""
@@ -2907,6 +3053,32 @@ class BackendJavaExtractor(Extractor):
                     self._add_dto_type_names(ep.response.type, type_names)
         return type_names
 
+    @staticmethod
+    def _is_valid_dto_name(name: str) -> bool:
+        """Check if a name looks like a valid Java DTO class name.
+
+        Rejects:
+        - Names in _PRIMITIVE_TYPES
+        - Names in _RESPONSE_WRAPPERS
+        - Names in _KNOWN_ANNOTATION_NAMES
+        - ALL_CAPS names (constants like EXAMPLE_IDS)
+        - Single character names
+        - Names shorter than 2 characters
+        - Names containing non-identifier characters
+        """
+        if not name or len(name) < 2:
+            return False
+        if (name in _PRIMITIVE_TYPES or name in _RESPONSE_WRAPPERS
+                or name in _KNOWN_ANNOTATION_NAMES):
+            return False
+        # Reject ALL_CAPS (constants) — but allow names like "ID" only if 2 chars
+        if name.isupper():
+            return False
+        # Reject names with non-identifier characters (e.g., "String[]")
+        if not re.match(r'^[A-Z][a-zA-Z0-9_]*$', name):
+            return False
+        return True
+
     def _add_dto_type_names(self, type_str: str, names: set[str]) -> None:
         """Extract concrete DTO type names from a type string, stripping generics."""
         # Handle generic types: List<OrderDto> → OrderDto
@@ -2914,11 +3086,11 @@ class BackendJavaExtractor(Extractor):
         # Find all type names inside angle brackets
         inner = re.findall(r'[A-Z]\w+', type_str)
         for name in inner:
-            if name not in _PRIMITIVE_TYPES:
+            if self._is_valid_dto_name(name) and name not in names:
                 names.add(name)
         # Also check the outer type itself
         base = type_str.split('<')[0].strip()
-        if base and base[0].isupper() and base not in _PRIMITIVE_TYPES:
+        if base and base[0].isupper() and self._is_valid_dto_name(base):
             names.add(base)
 
     def _parse_java_class(self, file_path: Path, root: Path) -> DtoSchema | None:
@@ -2998,6 +3170,22 @@ class BackendJavaExtractor(Extractor):
 
         return None, None
 
+    @staticmethod
+    def _collect_annotations(text: str) -> list[str]:
+        """Extract complete annotation strings from text, handling multi-line annotations.
+
+        Returns a list of full annotation strings (e.g. '@NotNull',
+        '@Schema(description = "foo", example = "bar")') with balanced
+        parentheses properly handled.
+        """
+        annotations: list[str] = []
+        for start, end in BackendJavaExtractor._walk_annotations(text):
+            ann_text = text[start:end].strip()
+            # Normalize internal whitespace for easier regex matching
+            ann_text = re.sub(r'\s+', ' ', ann_text)
+            annotations.append(ann_text)
+        return annotations
+
     def _extract_class_fields(
         self, content: str, class_name: str
     ) -> list[DtoField]:
@@ -3027,36 +3215,91 @@ class BackendJavaExtractor(Extractor):
         if not class_body:
             return fields
 
-        # Split into lines and process field declarations
-        # Pattern: optional annotations on preceding lines, then field declaration
-        lines = class_body.split('\n')
-        pending_annotations: list[str] = []
+        # Pair each field declaration with its preceding annotations.
+        # Handles single-line annotations with complex content (e.g. strings
+        # containing parens).  Multi-line annotations whose parenthesized
+        # content spans multiple lines are not yet fully supported — the
+        # annotation text is partially captured but the field is still found.
+        field_annotation_pairs = self._pair_annotations_with_fields(class_body)
 
-        for line in lines:
-            stripped = line.strip()
-
-            # Collect annotations
-            if stripped.startswith('@'):
-                pending_annotations.append(stripped)
-                continue
-
-            # Try to match a field declaration
-            field = self._parse_field_declaration(stripped, pending_annotations)
+        for field_annotations, field_line in field_annotation_pairs:
+            field = self._parse_field_declaration(field_line, field_annotations)
             if field:
                 fields.append(field)
-                pending_annotations = []
-            elif (
-                stripped
-                and not stripped.startswith('//')
-                and not stripped.startswith('/*')
-                and not stripped.startswith('*')
-            ):
-                # Non-annotation, non-field line — reset annotations
-                if not self._is_method_or_constructor(stripped, class_name):
-                    pass  # Could be inner class, etc.
-                pending_annotations = []
 
         return fields
+
+    def _pair_annotations_with_fields(
+        self, class_body: str
+    ) -> list[tuple[list[str], str]]:
+        """Walk class body text and pair annotations with their field declarations.
+
+        Uses _strip_annotations on each line to separate annotation text from
+        non-annotation content, then _collect_annotations on accumulated
+        annotation lines to extract complete annotation strings.
+
+        Handles single-line annotations with complex content (e.g. strings
+        containing parentheses like ``@Schema(example = "eyJ)test")``).
+        Multi-line annotations whose parenthesized body spans multiple lines
+        are only partially captured — the field itself is still found, but
+        the annotation may be incomplete.
+
+        Returns a list of (annotations, field_line) tuples where field_line
+        is a clean line (annotations stripped) that looks like a field declaration.
+        """
+        pairs: list[tuple[list[str], str]] = []
+
+        orig_lines = class_body.split('\n')
+        pending_annotation_text: list[str] = []
+
+        for orig_line in orig_lines:
+            stripped_orig = orig_line.strip()
+
+            # Strip annotations from this single line to see what remains
+            clean = self._strip_annotations(stripped_orig).strip()
+
+            if not stripped_orig:
+                # Empty line — reset pending annotations
+                if pending_annotation_text:
+                    pending_annotation_text = []
+                continue
+
+            if (
+                stripped_orig.startswith('//')
+                or stripped_orig.startswith('/*')
+                or stripped_orig.startswith('*')
+            ):
+                # Comment line — skip but don't reset annotations
+                continue
+
+            if not clean:
+                # Line was entirely annotation(s) — accumulate
+                pending_annotation_text.append(stripped_orig)
+                continue
+
+            if clean == stripped_orig:
+                # No annotations on this line at all
+                # This is a pure statement line — pair with accumulated annotations
+                # Collect all annotations from the accumulated annotation text
+                full_ann_block = '\n'.join(pending_annotation_text)
+                anns = (
+                    self._collect_annotations(full_ann_block)
+                    if full_ann_block
+                    else []
+                )
+                pairs.append((anns, clean))
+                pending_annotation_text = []
+            else:
+                # Line has both annotations and non-annotation content
+                # (e.g. "@NotNull private String name;")
+                # Collect annotations from this line + pending
+                pending_annotation_text.append(stripped_orig)
+                full_ann_block = '\n'.join(pending_annotation_text)
+                anns = self._collect_annotations(full_ann_block)
+                pairs.append((anns, clean))
+                pending_annotation_text = []
+
+        return pairs
 
     def _parse_field_declaration(
         self, line: str, annotations: list[str]

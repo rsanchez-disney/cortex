@@ -112,7 +112,7 @@ repos:
   owner: team-backend
   domain: geo-info
   tier: standard
-  purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
+  purpose: ZIP/postal code country validation via Google Maps Geocoding API with Redis caching
   swagger_url: https://asvaw3devgeoinfo.azurewebsites.net/geoinfo/v3/api-docs
 - name: identity-microservice
   path: .repos/identity-microservice

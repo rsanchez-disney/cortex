@@ -159,6 +159,34 @@ STOP_WORDS = frozenset(
 )
 
 
+_ENDPOINT_NOISE_WORDS = frozenset({
+    "v1", "v2", "v3", "v4", "api",
+    "request", "response", "dto",
+    "controller", "handler",
+})
+
+# Regex to split camelCase/PascalCase identifiers at word boundaries.
+# Matches transitions like: lowercase→Uppercase ("aB") and Uppercase→Uppercase+lowercase ("ABc").
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _tokenize_identifier(text: str) -> set[str]:
+    """Tokenize an identifier: split camelCase, kebab-case, paths, remove noise.
+
+    Handles both path-style identifiers (``/v1/zipcode/validate-country``)
+    and Java-style identifiers (``ValidateCountryRequest``).
+    """
+    # Split on /, -, _, . first
+    parts = re.split(r"[/\-_.]", text)
+    words: list[str] = []
+    for part in parts:
+        # Split camelCase within each part
+        sub_parts = _CAMEL_SPLIT_RE.split(part)
+        words.extend(sub_parts)
+    lowered = {w.lower() for w in words if len(w) > 1}
+    return lowered - STOP_WORDS - _ENDPOINT_NOISE_WORDS
+
+
 class CortexMCPServer:
     """The Cortex MCP server, wrapping a FastMCP instance."""
 
@@ -747,6 +775,30 @@ def _score_service(svc: dict, query_tokens: set[str]) -> tuple[float, list[str]]
     if module_overlap:
         score += len(module_overlap) * 1.0
         matched_on.append("modules")
+
+    # Endpoint path match: high weight (2.0x)
+    path_tokens: set[str] = set()
+    for ep in svc.get("endpoints", []):
+        ep_path = ep.get("path", "") or ""
+        path_tokens |= _tokenize_identifier(ep_path)
+    path_overlap = query_tokens & path_tokens
+    if path_overlap:
+        score += len(path_overlap) * 2.0
+        matched_on.append("endpoint_paths")
+
+    # Endpoint DTO name match: medium weight (1.5x)
+    dto_tokens: set[str] = set()
+    for ep in svc.get("endpoints", []):
+        req_body = ep.get("request_body")
+        if req_body and req_body.get("type"):
+            dto_tokens |= _tokenize_identifier(req_body["type"])
+        resp = ep.get("response")
+        if resp and resp.get("type"):
+            dto_tokens |= _tokenize_identifier(resp["type"])
+    dto_overlap = query_tokens & dto_tokens
+    if dto_overlap:
+        score += len(dto_overlap) * 1.5
+        matched_on.append("endpoint_dtos")
 
     return score, matched_on
 
