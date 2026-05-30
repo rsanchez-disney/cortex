@@ -36,7 +36,7 @@ repos:
     owner: team-backend
     domain: access-control
     tier: critical
-    purpose: Access validation, parking events, AiFi zone detection
+    purpose: Validates fan/staff access at arena entry points (NFC, biometric, tap-to-pay), resolves parking events via license plate recognition, and handles AiFi zone entry for frictionless commerce. Integrates with identity, ticketing, payments, entitlements, credential, loyalty, and Paravision (facial recognition).
     swagger_url: https://asvaw3devaccesscontrol.azurewebsites.net/accesscontrol/v3/api-docs
 
   - name: accesscontrol-processor-microservice
@@ -45,7 +45,7 @@ repos:
     owner: team-backend
     domain: access-control
     tier: critical
-    purpose: Access event persistence, historical event sync, account anonymization, anti-spoofing alerts, biometric data cleanup
+    purpose: Consumes access-control and anti-spoofing Kafka events for persistence and historical analysis. Runs scheduled jobs for biometric data clearing (Paravision), deleted account history sync, and historical fan event aggregation. Sends anti-spoofing alerts to MS Teams.
     swagger_url: https://asvaw3devaccesscontrolprocessor.azurewebsites.net/accesscontrolprocessor/v3/api-docs
 
   - name: admin-tool
@@ -54,7 +54,7 @@ repos:
     owner: team-backend
     domain: access-control
     tier: standard
-    purpose: Admin portal BFF — user/staff/role management, access control, suites, tickets, events, device (IDAP) management, entitlements, notifications, venue configuration
+    purpose: BFF for the admin web portal, aggregating 10+ downstream services (identity, ticketing, entitlements, back-of-house, suites, staff, locations, configuration, IoT, notifications). Manages settings, entitlement promises by section/event, AEM content fetching, and Adobe CMS integration.
     swagger_url: https://asvaw3devadmintool.azurewebsites.net/admintool/v3/api-docs
 
   - name: ambientcontrol-microservice
@@ -63,7 +63,7 @@ repos:
     owner: team-backend
     domain: arena-experience
     tier: standard
-    purpose: Ambient arena controls — lighting, sound, scoreboard, and environmental automation
+    purpose: Controls suite and bowl-section HVAC temperature and lighting via Schneider Electric BMS integration. Manages fan temperature polls (vote hot/cold per seat section) with scheduled evaluation. Consumes NBA play-by-play events for game-reactive automation.
     swagger_url: https://asvawudevambientcontrol.azurewebsites.net/ambientcontrol/v3/api-docs
 
   - name: backofhouse-microservice
@@ -72,7 +72,7 @@ repos:
     owner: team-backend
     domain: operations
     tier: standard
-    purpose: Back-of-house operations management, staff workflows, and internal tooling
+    purpose: Manages Genetec physical access control system integration — cardholder groups, credential entities, door activity reports, and cardholder sync. Runs scheduled jobs for credential clearing, cardholder sync, and Genetec interface activation.
     swagger_url: https://asvaw3devbackofhouse.azurewebsites.net/backofhouse/v3/api-docs
 
   - name: commerce-microservice
@@ -81,7 +81,7 @@ repos:
     owner: team-backend
     domain: commerce
     tier: critical
-    purpose: Commerce catalog, ordering, and retail transaction management
+    purpose: Manages in-venue retail commerce — product catalogs, ordering, and Microsoft Dynamics 365 POS integration. Consumes Kafka events from Microsoft commerce, entitlements, and ticketing for order lifecycle management. Integrates with payments, locations, suites, identity, and notifications.
     swagger_url: https://asvaw3devcommerce.azurewebsites.net/commerce/v3/api-docs
 
   - name: configuration-microservice
@@ -90,7 +90,7 @@ repos:
     owner: team-backend
     domain: platform
     tier: standard
-    purpose: Centralized runtime configuration management for all platform services
+    purpose: CRUD API for Azure App Configuration key-value entries with label-based filtering. Provides health check, cache invalidation, and key/label lookup endpoints. Backed by Azure App Configuration SDK with Redis caching — no database, no Kafka.
     swagger_url: https://asvaw3devconfiguration.azurewebsites.net/configuration/v3/api-docs
 
   - name: credentialid-microservice
@@ -99,7 +99,7 @@ repos:
     owner: team-backend
     domain: identity
     tier: critical
-    purpose: Credential issuance and validation for physical and digital access (NFC, QR, biometric)
+    purpose: Manages Apple Wallet pass lifecycle — issuance, updates, and revocation of digital NFC credentials. Consumes Kafka events for identity changes and entitlement lifecycle to keep passes in sync. Integrates with Apple onboarding APIs and Paravision for biometric enrollment.
     swagger_url: https://asvaw3devcredentialid.azurewebsites.net/credentialid/v3/api-docs
 
   - name: datams-microservice
@@ -108,7 +108,7 @@ repos:
     owner: team-backend
     domain: data
     tier: standard
-    purpose: Data management service — aggregation, transformation, and reporting pipelines
+    purpose: Kafka Streams processor for data transformation pipelines — reads from input topics and writes to output topics. Minimal service with no REST API endpoints, no database, and no outbound HTTP calls.
     swagger_url: https://asvaw3devdatams.azurewebsites.net/datams/v3/api-docs
 
   - name: entitlements-microservice
@@ -117,7 +117,7 @@ repos:
     owner: team-backend
     domain: entitlements
     tier: critical
-    purpose: Entitlement assignment, redemption, transfer, expiration
+    purpose: Manages fan entitlements (parking, club access, suite access, rewards) — creation, redemption, transfer, update, deletion, and scheduled expiration. Produces lifecycle events to 7 Kafka topics and consumes creation requests, identity upgrades, and account deletions.
     swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
 
   - name: evcharge-microservice
@@ -126,7 +126,7 @@ repos:
     owner: team-backend
     domain: parking
     tier: standard
-    purpose: EV charging station management, session tracking, and billing integration
+    purpose: Manages EV charging sessions using OCPI protocol — syncs charger locations and tariffs from Greenlots CPO, tracks charging sessions, and pushes session events and notifications via Kafka. Integrates with identity service for user lookup.
     swagger_url: https://asvaw3devevcharge.azurewebsites.net/evcharge/v3/api-docs
 
   - name: frictionless-commerce-microservice
@@ -135,7 +135,7 @@ repos:
     owner: team-backend
     domain: commerce
     tier: critical
-    purpose: Frictionless checkout sessions, AiFi integration, POS
+    purpose: Orchestrates cashierless just-walk-out shopping in AiFi-powered stores — manages shopper sessions, fan recognition at IDAP devices, payment method validation, and cart/receipt processing. Consumes 12 Kafka topics and integrates with AiFi OASIS API, queue management, identity, payments, and entitlements.
     swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
 
   - name: geoinfo-microservice
@@ -153,7 +153,7 @@ repos:
     owner: team-backend
     domain: identity
     tier: critical
-    purpose: Identity management, account CRUD, authentication, NFC/NBA integrations
+    purpose: Central identity service — manages fan/staff accounts (CRUD, linking, upgrade, deletion, blocking), age verification via CLEAR, biometric enrollment via Paravision, NBA CIAM account linking, and Apple Wallet credential sync. Produces 6 Kafka identity lifecycle events and consumes 8 topics.
     swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
 
   - name: incident-microservice
@@ -162,7 +162,7 @@ repos:
     owner: team-backend
     domain: operations
     tier: standard
-    purpose: Incident reporting, tracking, and escalation for arena operations
+    purpose: Proxies incident management operations to IMS247 (third-party incident management system) — creates/retrieves incidents, fetches priority levels and resolution codes. No Kafka, no database — pure API gateway to IMS247 with Redis caching.
     swagger_url: https://asvaw3devincident.azurewebsites.net/incident/v3/api-docs
 
   - name: locations-microservice
@@ -180,7 +180,7 @@ repos:
     owner: team-backend
     domain: loyalty
     tier: standard
-    purpose: Loyalty points, rewards, achievements, leaderboards, badges
+    purpose: Manages the PlayFab-backed loyalty program — points accrual, rewards, achievements, leaderboards, badges, seat pairing, and discount code generation via Microsoft Dynamics. Consumes Kafka events from access control, seat presence, payments, ticketing, and PlayFab playstream.
     swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
 
   - name: loyalty-sa-microservice
@@ -189,7 +189,7 @@ repos:
     owner: team-backend
     domain: loyalty
     tier: standard
-    purpose: Real-time data feeds for loyalty (NBA, sound levels, clock)
+    purpose: Standalone data ingestion service for the loyalty system — polls NBA game data, Sorama sound level sensors, and game clock feeds, then publishes events to Kafka topics for downstream loyalty processing. No REST API consumers — purely a producer/scheduler service.
     swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
 
   - name: nba-microservice
@@ -198,7 +198,7 @@ repos:
     owner: team-backend
     domain: entertainment
     tier: standard
-    purpose: NBA data integration — live game feeds, scores, player stats, and schedule sync
+    purpose: Fetches live NBA game data (scores, play-by-play, schedules, player stats) from the NBA API and publishes events to Kafka. Integrates with WSC Sports for video highlights and pushes game data to Adobe Experience Platform via HTTP data streams.
     swagger_url: https://asvaw3devnba.azurewebsites.net/nba/v3/api-docs
 
   - name: notifications-microservice
@@ -207,7 +207,7 @@ repos:
     owner: team-backend
     domain: notifications
     tier: standard
-    purpose: Push notifications, in-app alerts, and SMS/email delivery for fan and staff communications
+    purpose: Multi-channel notification delivery — push notifications via Apple APNs, SMS via Infobip, email via Azure Communication Services, and journey-triggered messages via Adobe Journey Optimizer (AJO). Consumes Kafka events for push requests and NBA game events.
     swagger_url: https://asvaw3devnotifications.azurewebsites.net/notifications/v3/api-docs
 
   - name: offlinecache-microservice
@@ -216,7 +216,7 @@ repos:
     owner: team-backend
     domain: platform
     tier: standard
-    purpose: Offline cache management — pre-computation and serving of data for low-latency mobile access
+    purpose: Pre-computes and caches fan-specific data bundles (entitlements, identity, tickets, biometric records) for offline/low-latency mobile access. Consumes entitlement creation events from Kafka to trigger cache refresh.
     swagger_url: https://asvaw3devofflinecache.azurewebsites.net/offlinecache/v3/api-docs
 
   - name: payments-microservice
@@ -225,7 +225,7 @@ repos:
     owner: team-backend
     domain: payments
     tier: critical
-    purpose: Payment methods, transactions, invoices, chargebacks
+    purpose: Manages payment methods (card tokenization via Chase/JPMorgan, Apple Pay wallet decryption), processes transactions through Microsoft Dynamics 365 Commerce (cart creation, order history, refunds), and handles chargeback uploads. Produces 7 Kafka event types.
     swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
 
   - name: preferences-microservice
@@ -234,7 +234,7 @@ repos:
     owner: team-backend
     domain: identity
     tier: standard
-    purpose: User preferences and personalization settings (notifications, accessibility, favorites)
+    purpose: Manages fan communication consent preferences (email, SMS, push) and profile data, syncing them to Adobe Experience Platform (AEP) via Kafka. Consumes identity account creation events and AEP consent blob events.
     swagger_url: https://asvaw3devpreferences.azurewebsites.net/preferences/v3/api-docs
 
   - name: purchasenotifications-microservice
@@ -243,7 +243,7 @@ repos:
     owner: team-backend
     domain: commerce
     tier: standard
-    purpose: Purchase confirmation and transactional notification delivery for commerce events
+    purpose: Consumes anonymous purchase events from Kafka and sends transactional purchase receipts via Adobe Journey Optimizer (AJO). Fetches order details from Microsoft Dynamics 365 Commerce to enrich notification payloads. Stateless event processor — no database.
     swagger_url: https://asvaw3devpurchasenotifications.azurewebsites.net/purchasenotifications/v3/api-docs
 
   - name: queuemanagement-microservice
@@ -252,7 +252,7 @@ repos:
     owner: team-backend
     domain: operations
     tier: standard
-    purpose: Virtual queue management for concessions, merchandise, and high-demand entry points
+    purpose: Manages virtual queues for arena locations — fan queue enrollment, position tracking, resolution (admit/reject), and dead-letter handling. Produces queue resolution events consumed by access-control and frictionless-commerce.
     swagger_url: https://asvaw3devqueuemanagement.azurewebsites.net/queuemanagement/v3/api-docs
 
   - name: replayengine-microservice
@@ -261,7 +261,7 @@ repos:
     owner: team-backend
     domain: entertainment
     tier: standard
-    purpose: In-arena instant replay engine — clip capture, processing, and fan display distribution
+    purpose: Consumes multiple real-time Kafka streams (seat pairing, NBA play-by-play, sound levels, commerce events, fan classification, PlayFab) to drive personalized in-seat replay experiences. Integrates with identity and Microsoft Dynamics 365 Commerce for fan context.
     swagger_url: https://asvaw3devreplayengine.azurewebsites.net/replayengine/v3/api-docs
 
   - name: seatpresence-microservice
@@ -270,7 +270,7 @@ repos:
     owner: team-backend
     domain: access-control
     tier: standard
-    purpose: Real-time seat occupancy detection and presence tracking for dynamic fan experiences
+    purpose: Tracks real-time seat occupancy by consuming access-control entry events from Kafka, then produces seat-presence and loyalty-seat-pairing events for downstream services. No outbound HTTP calls — pure event-driven processor backed by Cosmos DB.
     swagger_url: https://asvaw3devseatpresence.azurewebsites.net/seatpresence/v3/api-docs
 
   - name: staff-microservice
@@ -279,7 +279,7 @@ repos:
     owner: team-backend
     domain: operations
     tier: standard
-    purpose: Staff profile management, shift scheduling, role assignment, and internal communications
+    purpose: Manages staff member profiles, roles, and organizational data. Consumes Kafka events for identity account deletion and upgrade to keep staff records in sync. Self-contained CRUD service backed by Cosmos DB.
     swagger_url: https://asvaw3devstaff.azurewebsites.net/staff/v3/api-docs
 
   - name: suites-microservice
@@ -288,7 +288,7 @@ repos:
     owner: team-backend
     domain: suites
     tier: critical
-    purpose: Suite management, packages, guest passes, HVAC/lighting, invitations
+    purpose: Manages premium suite lifecycle — suite packages, guest pass invitations, event-day settings, and suite holder management. Consumes 7 Kafka topics for identity changes, location config, and ticketing events. Integrates with 10 downstream services including ambient-control for HVAC/lighting.
     swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
 
   - name: ticketing-microservice
@@ -297,7 +297,7 @@ repos:
     owner: team-backend
     domain: ticketing
     tier: critical
-    purpose: Ticketing management, seat inventory, reservations, event access
+    purpose: Manages event ticketing — ticket inventory, seat maps, purchases, redemptions, transfers, squad/sit-with-friends features, and attendance tracking. Integrates with Ticketmaster Presence and produces 11 Kafka event topics. Uses PostgreSQL (163 Flyway migrations) as primary database.
     swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
 
   # The iOS repo contains a single Xcode project (App/LaLiga.xcodeproj) with two
