@@ -136,6 +136,53 @@ _KNOWN_ANNOTATION_NAMES = frozenset({
     "SneakyThrows", "Synchronized", "Locked",
 })
 
+# Well-known framework/library class names — never resolve these as DTOs.
+# Organised by category for maintainability.
+_KNOWN_FRAMEWORK_TYPES = frozenset({
+    # --- Spring Framework ---
+    "ApplicationEventPublisher", "ApplicationContext", "Environment",
+    "BeanFactory", "ConversionService", "MessageSource", "ResourceLoader",
+    "TaskExecutor", "TaskScheduler", "WebClient", "RestTemplate", "RestClient",
+    "JdbcTemplate", "NamedParameterJdbcTemplate", "TransactionTemplate",
+    "PlatformTransactionManager", "ObjectMapper", "ObjectProvider",
+    "RedisTemplate", "StringRedisTemplate", "ReactiveRedisTemplate",
+    # --- Java stdlib ---
+    "ScheduledExecutorService", "ExecutorService", "Executor", "Clock",
+    "Timer", "TimerTask", "ThreadPoolExecutor", "CompletionService",
+    "CountDownLatch", "Semaphore", "ConcurrentHashMap",
+    "AtomicInteger", "AtomicLong", "AtomicBoolean", "AtomicReference",
+    "Logger", "Pattern", "Matcher", "Locale", "TimeZone", "Currency",
+    "Properties", "Random", "SecureRandom", "MessageDigest", "Cipher",
+    "KeyStore", "SSLContext", "Path", "File", "Reader", "Writer",
+    "BufferedReader", "PrintWriter", "Charset", "StandardCharsets",
+    # --- Spring Kafka ---
+    "KafkaTemplate", "KafkaAdmin", "KafkaListenerContainerFactory",
+    "ConsumerFactory", "ProducerFactory", "KafkaOperations",
+    "StreamsBuilder", "KafkaStreamsConfiguration",
+    # --- Spring Security ---
+    "AuthenticationManager", "SecurityContext", "Authentication",
+    "UserDetails", "GrantedAuthority", "SecurityFilterChain",
+    "HttpSecurity", "WebSecurityCustomizer",
+    # --- Spring Data ---
+    "CrudRepository", "JpaRepository", "PagingAndSortingRepository",
+    "MongoTemplate", "ReactiveMongoTemplate", "CosmosRepository",
+    "CosmosTemplate", "Pageable", "Page", "Sort", "Specification",
+    # --- Servlet API ---
+    "HttpSession", "ServletContext", "FilterChain", "Cookie",
+    "HttpHeaders", "MediaType", "HttpStatus",
+})
+
+# Known framework/library package prefixes — classes imported from these
+# packages are silently skipped during DTO resolution.
+_FRAMEWORK_PACKAGE_PREFIXES = frozenset({
+    "java.", "javax.", "jakarta.",
+    "org.springframework.", "org.apache.kafka.",
+    "com.fasterxml.jackson.", "io.swagger.",
+    "org.slf4j.", "lombok.", "org.apache.commons.",
+    "com.google.", "io.micrometer.", "reactor.",
+    "org.hibernate.", "com.azure.", "io.netty.",
+})
+
 # Maximum recursion depth for nested DTO resolution
 _MAX_DTO_DEPTH = 5
 
@@ -197,7 +244,7 @@ class BackendJavaExtractor(Extractor):
         source_repo = self._get_source_repo(repo_path)
         dto_schemas = self._extract_dto_schemas(effective_root, api_contracts)
 
-        return ServiceManifest(
+        manifest = ServiceManifest(
             name=service_yaml.name,
             type=service_yaml.type,
             owner=service_yaml.owner,
@@ -238,6 +285,8 @@ class BackendJavaExtractor(Extractor):
             extractor_version=__version__,
             source_repo=source_repo,
         )
+        self._enrich_with_context(manifest, repo_path)
+        return manifest
 
     def find_api_contracts(self, repo_path: Path) -> list[ApiContract]:
         """Extract API contracts from Spring controller annotations."""
@@ -2947,12 +2996,15 @@ class BackendJavaExtractor(Extractor):
         if not type_names:
             return {}
 
-        # Step 2: Build class index
-        class_index = self._build_class_index(root)
+        # Step 2: Build class index (also collects framework import names)
+        class_index, framework_imports = self._build_class_index(root)
 
         # Step 3 & 4: Parse classes with recursive resolution
         schemas: dict[str, DtoSchema] = {}
-        self._resolve_dto_types(type_names, class_index, root, schemas, depth=0)
+        self._resolve_dto_types(
+            type_names, class_index, root, schemas, depth=0,
+            framework_imports=framework_imports,
+        )
 
         return schemas
 
@@ -2963,10 +3015,26 @@ class BackendJavaExtractor(Extractor):
         root: Path,
         schemas: dict[str, DtoSchema],
         depth: int,
+        *,
+        framework_imports: set[str] | None = None,
+        _skipped: set[str] | None = None,
     ) -> None:
-        """Recursively resolve DTO types up to _MAX_DTO_DEPTH."""
+        """Recursively resolve DTO types up to _MAX_DTO_DEPTH.
+
+        *framework_imports* is a set of simple class names that were seen in
+        ``import`` statements referencing well-known framework packages.
+        Classes in this set are silently skipped instead of being logged as
+        "not found".
+
+        *_skipped* is an internal accumulator passed through recursive calls
+        so that a single summary log line is emitted at the top-level call.
+        """
         if depth >= _MAX_DTO_DEPTH:
             return
+
+        fw_imports = framework_imports or set()
+        is_top_level = _skipped is None
+        skipped: set[str] = _skipped if _skipped is not None else set()
 
         new_types: set[str] = set()
 
@@ -2976,7 +3044,18 @@ class BackendJavaExtractor(Extractor):
 
             file_path = class_index.get(name)
             if file_path is None:
-                logger.debug("DTO class not found in repo", class_name=name)
+                # Silently skip if the class is a known framework import
+                if name in _KNOWN_FRAMEWORK_TYPES or name in fw_imports:
+                    skipped.add(name)
+                    continue
+                # Genuinely unresolvable — collect for summary log
+                skipped.add(name)
+                continue
+
+            # Class found in repo — but check if it's actually a framework
+            # class that happens to share a name with a local file.
+            if name in fw_imports:
+                skipped.add(name)
                 continue
 
             schema = self._parse_java_class(file_path, root)
@@ -2998,17 +3077,43 @@ class BackendJavaExtractor(Extractor):
         new_types -= _PRIMITIVE_TYPES
 
         if new_types:
-            self._resolve_dto_types(new_types, class_index, root, schemas, depth + 1)
+            self._resolve_dto_types(
+                new_types, class_index, root, schemas, depth + 1,
+                framework_imports=fw_imports, _skipped=skipped,
+            )
 
-    def _build_class_index(self, root: Path) -> dict[str, Path]:
+        # Emit a single summary log at the top-level call
+        if is_top_level and skipped:
+            logger.debug(
+                "Skipped framework/unresolvable DTO types",
+                count=len(skipped),
+                class_names=sorted(skipped),
+            )
+
+    def _build_class_index(
+        self, root: Path,
+    ) -> tuple[dict[str, Path], set[str]]:
         """Build a mapping of simple class name → source file path.
 
         Single-pass: indexes both file-stem class names and inner classes
         (public/private/static class/enum/record/interface declarations)
         in one traversal.  Comments are stripped before inner-class scanning
         to avoid false positives from commented-out declarations.
+
+        Also collects *framework_imports* — simple class names that appear in
+        ``import`` statements whose fully-qualified package matches a prefix
+        in ``_FRAMEWORK_PACKAGE_PREFIXES``.  These are used by
+        ``_resolve_dto_types`` to silently skip classes that belong to
+        well-known frameworks/libraries.
+
+        Returns:
+            (class_index, framework_imports)
         """
         class_index: dict[str, Path] = {}
+        framework_imports: set[str] = set()
+        import_pattern = re.compile(
+            r'^import\s+(?:static\s+)?([\w.]+)\s*;', re.MULTILINE,
+        )
         inner_class_pattern = re.compile(
             r'(?:public|protected|private|static|\s)+\s+'
             r'(?:class|enum|record|interface)\s+'
@@ -3027,11 +3132,17 @@ class BackendJavaExtractor(Extractor):
                 class_name = f.stem
                 if class_name not in class_index:
                     class_index[class_name] = f
-                # Scan for inner classes in the same pass
+                # Scan for inner classes and framework imports in the same pass
                 try:
                     content = f.read_text(errors="replace")
                 except OSError:
                     continue
+                # Collect framework imports (simple class name from FQ import)
+                for m in import_pattern.finditer(content):
+                    fq_name = m.group(1)
+                    if any(fq_name.startswith(p) for p in _FRAMEWORK_PACKAGE_PREFIXES):
+                        simple_name = fq_name.rsplit(".", 1)[-1]
+                        framework_imports.add(simple_name)
                 # Strip comments to avoid indexing commented-out declarations
                 stripped = re.sub(r'//[^\n]*', '', content)
                 stripped = re.sub(r'/\*.*?\*/', '', stripped, flags=re.DOTALL)
@@ -3040,7 +3151,7 @@ class BackendJavaExtractor(Extractor):
                     if inner_name not in class_index:
                         class_index[inner_name] = f
 
-        return class_index
+        return class_index, framework_imports
 
     def _collect_dto_type_names(self, api_contracts: list[ApiContract]) -> set[str]:
         """Collect all DTO type names referenced in endpoint contracts."""
@@ -3061,6 +3172,7 @@ class BackendJavaExtractor(Extractor):
         - Names in _PRIMITIVE_TYPES
         - Names in _RESPONSE_WRAPPERS
         - Names in _KNOWN_ANNOTATION_NAMES
+        - Names in _KNOWN_FRAMEWORK_TYPES
         - ALL_CAPS names (constants like EXAMPLE_IDS)
         - Single character names
         - Names shorter than 2 characters
@@ -3069,7 +3181,8 @@ class BackendJavaExtractor(Extractor):
         if not name or len(name) < 2:
             return False
         if (name in _PRIMITIVE_TYPES or name in _RESPONSE_WRAPPERS
-                or name in _KNOWN_ANNOTATION_NAMES):
+                or name in _KNOWN_ANNOTATION_NAMES
+                or name in _KNOWN_FRAMEWORK_TYPES):
             return False
         # Reject ALL_CAPS (constants) — but allow names like "ID" only if 2 chars
         if name.isupper():

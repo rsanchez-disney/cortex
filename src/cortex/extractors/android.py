@@ -99,7 +99,7 @@ class AndroidExtractor(Extractor):
         gradle_plugins = catalog_info.get("plugins", [])
         build_variants = self._parse_build_variants(effective_root)
 
-        return ServiceManifest(
+        manifest = ServiceManifest(
             name=service_yaml.name,
             type=service_yaml.type,
             owner=service_yaml.owner,
@@ -137,6 +137,8 @@ class AndroidExtractor(Extractor):
             extractor_version=__version__,
             source_repo=source_repo,
         )
+        self._enrich_with_context(manifest, repo_path)
+        return manifest
 
     def find_api_contracts(self, repo_path: Path) -> list[ApiContract]:
         """Mobile apps typically don't have API contracts."""

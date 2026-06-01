@@ -262,6 +262,12 @@ class ServiceManifest(BaseModel):
 
     swagger_url: str | None = None
 
+    # AI context fields (extracted from repo root / context-pack directory)
+    agent_context: str | None = None
+    domain_context: str | None = None
+    context_pack: dict[str, str] | None = None
+    enriched_purpose: str | None = None
+
     extracted_at: datetime
     extractor_version: str
     source_repo: SourceRepo | None = None
@@ -304,6 +310,11 @@ class GraphEntry(BaseModel):
     framework: str | None = None
     kafka_produces: list[str] = Field(default_factory=list)
     kafka_consumes: list[str] = Field(default_factory=list)
+
+    # Infrastructure fields promoted from ServiceManifest for graph-level querying
+    database_type: str | None = None
+    cache_type: str | None = None
+    swagger_url: str | None = None
 
 
 class OutboundCall(BaseModel):

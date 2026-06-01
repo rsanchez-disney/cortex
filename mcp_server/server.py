@@ -207,21 +207,39 @@ class CortexMCPServer:
         async def find_relevant_services(
             task_description: str,
             max_results: int = 5,
+            filters: dict[str, str] | None = None,
         ) -> dict[str, Any]:
             """Given a free-text task description, return the most likely services to be involved.
 
             Uses keyword matching against service names, keywords, purpose, and domain.
             Returns a ranked list of candidates with scores.
+
+            Args:
+                task_description: Free-text description of the task or query.
+                max_results: Maximum number of results to return (default: 5).
+                filters: Optional dict of filters to narrow results before scoring.
+                    Supported keys: database_type, cache_type, tier, domain, owner, type.
+                    Values are matched case-insensitively.
             """
             start = time.time()
             graph = await self._ensure_graph()
+
+            services = graph.get("services", [])
+
+            # Apply filters before scoring to narrow the candidate set
+            if filters:
+                for key, value in filters.items():
+                    services = [
+                        s for s in services
+                        if _matches_filter(s, key, value)
+                    ]
 
             tokens = _tokenize(task_description)
             if not tokens:
                 # No meaningful tokens — return all services (unscored listing query)
                 comm_edges_all = graph.get("communication", {}).get("edges", [])
                 all_svcs = []
-                for svc in graph.get("services", []):
+                for svc in services:
                     svc_name = svc["name"]
                     neighbor_names: set[str] = set()
                     for edge in comm_edges_all:
@@ -252,7 +270,7 @@ class CortexMCPServer:
                 return result
 
             candidates = []
-            for svc in graph.get("services", []):
+            for svc in services:
                 score, matched_on = _score_service(svc, tokens)
                 if score > 0:
                     candidates.append(
@@ -341,7 +359,9 @@ class CortexMCPServer:
 
             Args:
                 name: Service name
-                include: Sections to include. Default: ["manifest", "deps", "contracts", "notes"]
+                include: Sections to include. Default: ["manifest", "deps", "contracts", "notes",
+                    "communication"]. Additional valid values: "entry_points", "agent_context",
+                    "domain_context", "context_pack".
             """
             start = time.time()
 
@@ -355,20 +375,70 @@ class CortexMCPServer:
                 await self._log_query("get_service_context", {"name": name}, {"error": True}, start)
                 return result
 
-            # Fetch full manifest on demand
-            manifest = await self._get_manifest(name)
+            # Fetch full manifest on demand (lazy-load to avoid multiple reads)
+            _manifest: dict | None = None
+            _manifest_loaded = False
+
+            async def get_manifest() -> dict | None:
+                nonlocal _manifest, _manifest_loaded
+                if not _manifest_loaded:
+                    _manifest = await self._get_manifest(name)
+                    _manifest_loaded = True
+                return _manifest
 
             context: dict[str, Any] = {"name": name}
 
-            if "manifest" in include and manifest:
-                # Return subset of manifest (exclude large fields)
-                context["manifest"] = {
-                    k: v
-                    for k, v in manifest.items()
-                    if k not in ("dependencies", "api_contracts", "integration_notes")
-                }
+            if "manifest" in include:
+                manifest = await get_manifest()
+                if manifest:
+                    # Restructure manifest into logical groups
+                    overview: dict[str, Any] = {}
+                    for key in (
+                        "name", "type", "language", "language_version",
+                        "framework", "spring_boot_version", "owner",
+                        "domain", "tier", "purpose",
+                    ):
+                        val = manifest.get(key)
+                        if val is not None:
+                            overview[key] = val
+
+                    infrastructure: dict[str, Any] = {}
+                    for key in (
+                        "database_type", "secondary_databases", "cache_type",
+                        "flyway_migration_count", "gradle_plugins",
+                    ):
+                        val = manifest.get(key)
+                        if val is not None:
+                            infrastructure[key] = val
+
+                    runtime: dict[str, Any] = {}
+                    for key in ("docker_base_image", "ci_tool", "source_repo"):
+                        val = manifest.get(key)
+                        if val is not None:
+                            runtime[key] = val
+
+                    structured: dict[str, Any] = {}
+                    if overview:
+                        structured["overview"] = overview
+                    if infrastructure:
+                        structured["infrastructure"] = infrastructure
+                    if runtime:
+                        structured["runtime"] = runtime
+
+                    # Keep modules as-is if present
+                    modules = manifest.get("modules")
+                    if modules is not None:
+                        structured["modules"] = modules
+
+                    # Keep swagger_url at top level
+                    swagger_url = manifest.get("swagger_url")
+                    if swagger_url is not None:
+                        structured["swagger_url"] = swagger_url
+
+                    context["manifest"] = structured
 
             if "deps" in include:
+                manifest = await get_manifest()
                 if manifest:
                     context["direct_dependencies"] = [
                         d["name"] for d in manifest.get("dependencies", [])
@@ -378,12 +448,14 @@ class CortexMCPServer:
                     context["direct_dependencies"] = None
 
             if "contracts" in include:
+                manifest = await get_manifest()
                 if manifest:
                     context["api_contracts"] = manifest.get("api_contracts", [])
                 else:
                     context["api_contracts"] = []
 
             if "notes" in include:
+                manifest = await get_manifest()
                 notes = manifest.get("integration_notes", []) if manifest else []
                 global_notes = [n["note"] for n in notes if n.get("scope") == "global"]
                 by_endpoint: dict[str, list[str]] = {}
@@ -416,7 +488,7 @@ class CortexMCPServer:
                         topic = e.get("detail", "unknown")
                         subscribes_to.setdefault(topic, []).append(e.get("source", ""))
 
-                context["communication"] = {
+                comm_result: dict[str, Any] = {
                     "publishes_to": [
                         {"topic": t, "consumers": c} for t, c in publishes_to.items()
                     ],
@@ -426,6 +498,38 @@ class CortexMCPServer:
                     "http_calls": [e for e in calls_out if e.get("protocol") == "http"],
                     "http_called_by": [e for e in called_by if e.get("protocol") == "http"],
                 }
+
+                # R3.4: Add outbound call details from manifest
+                manifest = await get_manifest()
+                if manifest:
+                    if manifest.get("outbound_calls"):
+                        comm_result["outbound_http_calls"] = manifest["outbound_calls"]
+                    if manifest.get("api_calls"):
+                        comm_result["api_calls"] = manifest["api_calls"]
+
+                context["communication"] = comm_result
+
+            # R3.5: Entry points section
+            if "entry_points" in include:
+                manifest = await get_manifest()
+                if manifest and manifest.get("entry_points"):
+                    context["entry_points"] = manifest["entry_points"]
+
+            # R2.5: Context-pack sections
+            if "agent_context" in include:
+                manifest = await get_manifest()
+                if manifest and manifest.get("agent_context"):
+                    context["agent_context"] = manifest["agent_context"]
+
+            if "domain_context" in include:
+                manifest = await get_manifest()
+                if manifest and manifest.get("domain_context"):
+                    context["domain_context"] = manifest["domain_context"]
+
+            if "context_pack" in include:
+                manifest = await get_manifest()
+                if manifest and manifest.get("context_pack"):
+                    context["context_pack"] = manifest["context_pack"]
 
             await self._log_query(
                 "get_service_context",
@@ -800,6 +904,33 @@ def _score_service(svc: dict, query_tokens: set[str]) -> tuple[float, list[str]]
         score += len(dto_overlap) * 1.5
         matched_on.append("endpoint_dtos")
 
+    # Database type match: medium weight (1.5x)
+    db_type = (svc.get("database_type") or "").lower()
+    if db_type:
+        for token in query_tokens:
+            if token in db_type or db_type in token:
+                score += 1.5
+                matched_on.append("database_type")
+                break
+
+    # Cache type match: medium weight (1.5x)
+    cache_type = (svc.get("cache_type") or "").lower()
+    if cache_type:
+        for token in query_tokens:
+            if token in cache_type or cache_type in token:
+                score += 1.5
+                matched_on.append("cache_type")
+                break
+
+    # Framework match: medium weight (1.5x)
+    framework = (svc.get("framework") or "").lower()
+    if framework:
+        framework_tokens = _tokenize(framework.replace("-", " "))
+        framework_overlap = query_tokens & framework_tokens
+        if framework_overlap:
+            score += len(framework_overlap) * 1.5
+            matched_on.append("framework")
+
     return score, matched_on
 
 
@@ -809,6 +940,14 @@ def _find_service(graph: dict, name: str) -> dict | None:
         if svc.get("name") == name:
             return svc
     return None
+
+
+def _matches_filter(svc: dict, key: str, value: str) -> bool:
+    """Check if a service matches a single filter (case-insensitive)."""
+    svc_value = svc.get(key)
+    if svc_value is None:
+        return False
+    return str(svc_value).lower() == value.lower()
 
 
 # --- DTO schema resolution ---

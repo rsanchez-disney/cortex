@@ -190,6 +190,111 @@ class TestAggregate:
 
 
 # ---------------------------------------------------------------------------
+# TestGraphEntryInfraFields
+# ---------------------------------------------------------------------------
+
+
+class TestGraphEntryInfraFields:
+    """Tests for database_type, cache_type, and swagger_url on GraphEntry."""
+
+    def test_infra_fields_populated_when_present(self, tmp_path: Path) -> None:
+        """Graph entry includes infra fields when the manifest has them."""
+        storage = LocalStorageBackend(root=tmp_path)
+        storage.write_json(
+            "services/backend-svc/manifest.json",
+            {
+                "name": "backend-svc",
+                "type": "backend-java",
+                "owner": "team-platform",
+                "domain": "payments",
+                "tier": "critical",
+                "status": "active",
+                "purpose": "Payment processing service",
+                "keywords": [],
+                "dependencies": [],
+                "entry_points": [],
+                "api_contracts": [],
+                "integration_notes": [],
+                "extracted_at": "2026-05-01T00:00:00Z",
+                "extractor_version": "1.0.0",
+                "database_type": "postgresql",
+                "cache_type": "redis",
+                "swagger_url": "/swagger-ui.html",
+            },
+        )
+
+        graph = aggregate(storage)
+        assert len(graph.services) == 1
+        entry = graph.services[0]
+        assert entry.database_type == "postgresql"
+        assert entry.cache_type == "redis"
+        assert entry.swagger_url == "/swagger-ui.html"
+
+    def test_infra_fields_none_when_absent(self, tmp_path: Path) -> None:
+        """Graph entry has None for infra fields when manifest omits them."""
+        storage = LocalStorageBackend(root=tmp_path)
+        storage.write_json(
+            "services/simple-svc/manifest.json",
+            {
+                "name": "simple-svc",
+                "type": "backend-java",
+                "owner": "team-a",
+                "domain": "core",
+                "tier": "standard",
+                "status": "active",
+                "purpose": "Simple service",
+                "keywords": [],
+                "dependencies": [],
+                "entry_points": [],
+                "api_contracts": [],
+                "integration_notes": [],
+                "extracted_at": "2026-05-01T00:00:00Z",
+                "extractor_version": "1.0.0",
+            },
+        )
+
+        graph = aggregate(storage)
+        assert len(graph.services) == 1
+        entry = graph.services[0]
+        assert entry.database_type is None
+        assert entry.cache_type is None
+        assert entry.swagger_url is None
+
+    def test_infra_fields_in_serialized_json(self, tmp_path: Path) -> None:
+        """Infra fields appear in the serialized graph JSON output."""
+        storage = LocalStorageBackend(root=tmp_path)
+        storage.write_json(
+            "services/json-svc/manifest.json",
+            {
+                "name": "json-svc",
+                "type": "backend-java",
+                "owner": "team-b",
+                "domain": "orders",
+                "tier": "standard",
+                "status": "active",
+                "purpose": "JSON serialization test",
+                "keywords": [],
+                "dependencies": [],
+                "entry_points": [],
+                "api_contracts": [],
+                "integration_notes": [],
+                "extracted_at": "2026-05-01T00:00:00Z",
+                "extractor_version": "1.0.0",
+                "database_type": "mysql",
+                "cache_type": "memcached",
+                "swagger_url": "/v3/api-docs",
+            },
+        )
+
+        graph = aggregate(storage)
+        graph_dict = graph.model_dump(mode="json")
+        svc = graph_dict["services"][0]
+        assert svc["database_type"] == "mysql"
+        assert svc["cache_type"] == "memcached"
+        assert svc["swagger_url"] == "/v3/api-docs"
+
+
+# ---------------------------------------------------------------------------
 # TestCommunicationGraph
 # ---------------------------------------------------------------------------
 

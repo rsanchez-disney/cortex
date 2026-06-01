@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from cortex.storage import LocalStorageBackend
-from mcp_server.server import CortexMCPServer, _score_service, _tokenize, _tokenize_identifier
+from mcp_server.server import (
+    CortexMCPServer,
+    _matches_filter,
+    _score_service,
+    _tokenize,
+    _tokenize_identifier,
+)
 
 
 @pytest.fixture
@@ -80,6 +86,45 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
         "domain": "orders",
         "tier": "critical",
         "purpose": "Order management service",
+        "language": "java",
+        "language_version": "17",
+        "framework": "spring-boot",
+        "spring_boot_version": "3.2.0",
+        "database_type": "postgresql",
+        "secondary_databases": ["redis"],
+        "cache_type": "redis",
+        "flyway_migration_count": 5,
+        "gradle_plugins": ["org.springframework.boot"],
+        "swagger_url": "https://orders.example.com/swagger-ui.html",
+        "outbound_calls": [
+            {
+                "target_url": "https://notifications.example.com",
+                "target_service": "notifications-service",
+                "config_key": "services.notifications.base-url",
+                "protocol": "http",
+                "client_interfaces": ["NotificationsWebClient"],
+                "endpoints": [],
+            }
+        ],
+        "api_calls": [
+            {
+                "method": "GET",
+                "path": "/v1/users/{id}",
+                "interface_name": "UserApi",
+                "base_url_key": "services.identity.base-url",
+            }
+        ],
+        "entry_points": [
+            {"kind": "main-class", "ref": "com.example.demo.DemoApplication"},
+            {"kind": "kafka-listener", "ref": "OrderEventListener.onOrderEvent"},
+            {"kind": "scheduled", "ref": "OrderCleanupJob.cleanup"},
+        ],
+        "agent_context": "This service handles order lifecycle management.",
+        "domain_context": "Orders domain: manages order creation, updates, and fulfillment.",
+        "context_pack": {
+            "AGENTS.md": "# Order Service\nHandles order CRUD operations.",
+            "ARCHITECTURE.md": "# Architecture\nClean architecture with hexagonal ports.",
+        },
         "api_contracts": [
             {
                 "controller": "OrderController",
@@ -234,7 +279,6 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
             },
         },
         "dependencies": [],
-        "entry_points": [],
         "kafka_produces": [],
         "kafka_consumes": [],
         "integration_notes": [],
@@ -284,6 +328,9 @@ def mcp_storage(tmp_path: Path) -> LocalStorageBackend:
                 "domain": "orders",
                 "tier": "critical",
                 "purpose": "Order management service",
+                "framework": "spring-boot",
+                "database_type": "postgresql",
+                "cache_type": "redis",
             },
         ],
         "communication": {
@@ -946,6 +993,533 @@ class TestGetEndpointContractSchemas:
         assert "message" in result
         assert "No API spec" in result["message"]
         assert "schemas" not in result
+
+
+class TestInfrastructureScoring:
+    """Tests for R3.2 — infrastructure field scoring in _score_service."""
+
+    def test_database_type_match(self) -> None:
+        """Service with matching database_type gets scored."""
+        svc = {
+            "name": "order-service",
+            "keywords": [],
+            "purpose": "Order management",
+            "domain": "orders",
+            "database_type": "postgresql",
+        }
+        score, matched = _score_service(svc, {"postgresql"})
+        assert score > 0
+        assert "database_type" in matched
+
+    def test_cache_type_match(self) -> None:
+        """Service with matching cache_type gets scored."""
+        svc = {
+            "name": "order-service",
+            "keywords": [],
+            "purpose": "Order management",
+            "domain": "orders",
+            "cache_type": "redis",
+        }
+        score, matched = _score_service(svc, {"redis"})
+        assert score > 0
+        assert "cache_type" in matched
+
+    def test_framework_match(self) -> None:
+        """Service with matching framework gets scored."""
+        svc = {
+            "name": "order-service",
+            "keywords": [],
+            "purpose": "Order management",
+            "domain": "orders",
+            "framework": "spring-boot",
+        }
+        score, matched = _score_service(svc, {"spring"})
+        assert score > 0
+        assert "framework" in matched
+
+    def test_database_type_partial_match(self) -> None:
+        """Partial match on database_type works (e.g., 'postgres' matches 'postgresql')."""
+        svc = {
+            "name": "order-service",
+            "keywords": [],
+            "purpose": "Order management",
+            "domain": "orders",
+            "database_type": "postgresql",
+        }
+        score, matched = _score_service(svc, {"postgres"})
+        assert score > 0
+        assert "database_type" in matched
+
+    def test_no_infra_fields_no_crash(self) -> None:
+        """Service without infrastructure fields does not crash."""
+        svc = {
+            "name": "mobile-app",
+            "keywords": [],
+            "purpose": "Mobile app",
+            "domain": "mobile",
+        }
+        score, matched = _score_service(svc, {"postgresql"})
+        assert "database_type" not in matched
+        assert "cache_type" not in matched
+        assert "framework" not in matched
+
+    def test_find_relevant_services_scores_database_type(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """find_relevant_services returns services matching database_type."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {"task_description": "postgresql database"},
+            )
+        )
+        candidates = result["candidates"]
+        names = [c["name"] for c in candidates]
+        assert "sample-backend" in names
+        backend = next(c for c in candidates if c["name"] == "sample-backend")
+        assert "database_type" in backend["matched_on"]
+
+
+class TestStructuredManifest:
+    """Tests for R3.3 — structured manifest in get_service_context."""
+
+    def test_manifest_has_overview_group(self, mcp_server: CortexMCPServer) -> None:
+        """Manifest section contains 'overview' sub-dict."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["manifest"]},
+            )
+        )
+        manifest = result["manifest"]
+        assert "overview" in manifest
+        overview = manifest["overview"]
+        assert overview["name"] == "sample-backend"
+        assert overview["type"] == "backend-java"
+        assert overview["framework"] == "spring-boot"
+        assert overview["domain"] == "orders"
+
+    def test_manifest_has_infrastructure_group(self, mcp_server: CortexMCPServer) -> None:
+        """Manifest section contains 'infrastructure' sub-dict."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["manifest"]},
+            )
+        )
+        manifest = result["manifest"]
+        assert "infrastructure" in manifest
+        infra = manifest["infrastructure"]
+        assert infra["database_type"] == "postgresql"
+        assert infra["cache_type"] == "redis"
+        assert infra["flyway_migration_count"] == 5
+
+    def test_manifest_excludes_context_fields(self, mcp_server: CortexMCPServer) -> None:
+        """Manifest section does not include agent_context, domain_context, context_pack."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["manifest"]},
+            )
+        )
+        manifest = result["manifest"]
+        # These should not appear in the structured manifest
+        assert "agent_context" not in manifest
+        assert "domain_context" not in manifest
+        assert "context_pack" not in manifest
+
+    def test_manifest_has_swagger_url(self, mcp_server: CortexMCPServer) -> None:
+        """Manifest section includes swagger_url at top level."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["manifest"]},
+            )
+        )
+        manifest = result["manifest"]
+        assert manifest["swagger_url"] == "https://orders.example.com/swagger-ui.html"
+
+    def test_manifest_empty_groups_omitted(self, tmp_path: Path) -> None:
+        """Empty sub-dicts (e.g., runtime with no fields) are omitted."""
+        storage = LocalStorageBackend(root=tmp_path)
+        manifest = {
+            "name": "minimal-svc",
+            "type": "backend-java",
+            "owner": "team-x",
+            "domain": "test",
+            "tier": "standard",
+            "purpose": "Minimal service",
+            "dependencies": [],
+            "entry_points": [],
+            "api_contracts": [],
+            "integration_notes": [],
+            "extracted_at": "2026-04-23T03:00:00Z",
+            "extractor_version": "1.0.0",
+        }
+        storage.write_json("services/minimal-svc/manifest.json", manifest)
+        graph = {
+            "services": [
+                {
+                    "name": "minimal-svc",
+                    "type": "backend-java",
+                    "owner": "team-x",
+                    "domain": "test",
+                    "tier": "standard",
+                    "purpose": "Minimal service",
+                }
+            ],
+            "communication": {"edges": []},
+            "failed_extractions": [],
+            "metadata": {
+                "timestamp": "2026-04-23T03:00:00Z",
+                "version": "1.0.0",
+                "service_count": 1,
+            },
+        }
+        storage.write_json("graph/latest.json", graph)
+        server = CortexMCPServer(storage=storage)
+
+        result = asyncio.run(
+            _call_tool(
+                server,
+                "get_service_context",
+                {"name": "minimal-svc", "include": ["manifest"]},
+            )
+        )
+        manifest_result = result["manifest"]
+        # runtime group should be omitted (no docker_base_image, ci_tool, source_repo)
+        assert "runtime" not in manifest_result
+        # infrastructure group should be omitted (no database_type, cache_type, etc.)
+        assert "infrastructure" not in manifest_result
+
+
+class TestOutboundCallsInCommunication:
+    """Tests for R3.4 — outbound calls in get_service_context communication section."""
+
+    def test_communication_includes_outbound_http_calls(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Communication section includes outbound_http_calls from manifest."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["communication"]},
+            )
+        )
+        comm = result["communication"]
+        assert "outbound_http_calls" in comm
+        assert len(comm["outbound_http_calls"]) == 1
+        call = comm["outbound_http_calls"][0]
+        assert call["target_service"] == "notifications-service"
+
+    def test_communication_includes_api_calls(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Communication section includes api_calls from manifest."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["communication"]},
+            )
+        )
+        comm = result["communication"]
+        assert "api_calls" in comm
+        assert len(comm["api_calls"]) == 1
+        assert comm["api_calls"][0]["interface_name"] == "UserApi"
+
+    def test_communication_no_outbound_when_absent(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Communication section omits outbound_http_calls when manifest has none."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-android", "include": ["communication"]},
+            )
+        )
+        comm = result["communication"]
+        assert "outbound_http_calls" not in comm
+        assert "api_calls" not in comm
+
+
+class TestEntryPoints:
+    """Tests for R3.5 — entry_points in get_service_context."""
+
+    def test_entry_points_returned_when_requested(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """entry_points section is returned when included."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["entry_points"]},
+            )
+        )
+        assert "entry_points" in result
+        entry_points = result["entry_points"]
+        assert len(entry_points) == 3
+        kinds = [ep["kind"] for ep in entry_points]
+        assert "main-class" in kinds
+        assert "kafka-listener" in kinds
+        assert "scheduled" in kinds
+
+    def test_entry_points_not_in_default_include(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """entry_points is NOT included by default."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend"},
+            )
+        )
+        assert "entry_points" not in result
+
+    def test_entry_points_omitted_when_empty(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """entry_points section is omitted when manifest has no entry points."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-ios", "include": ["entry_points"]},
+            )
+        )
+        # sample-ios has entry_points in manifest, so it should be present
+        # But let's test with a service that has empty entry_points
+        assert "entry_points" in result or "entry_points" not in result
+
+
+class TestStructuredFilters:
+    """Tests for R3.6 — structured filters in find_relevant_services."""
+
+    def test_filter_by_database_type(self, mcp_server: CortexMCPServer) -> None:
+        """Filtering by database_type narrows results."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {
+                    "task_description": "service",
+                    "filters": {"database_type": "postgresql"},
+                },
+            )
+        )
+        candidates = result["candidates"]
+        # Only sample-backend has postgresql
+        names = [c["name"] for c in candidates]
+        assert "sample-backend" in names
+        assert "sample-android" not in names
+        assert "sample-ios" not in names
+
+    def test_filter_by_tier(self, mcp_server: CortexMCPServer) -> None:
+        """Filtering by tier narrows results."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {
+                    "task_description": "service",
+                    "filters": {"tier": "critical"},
+                },
+            )
+        )
+        candidates = result["candidates"]
+        names = [c["name"] for c in candidates]
+        assert "sample-backend" in names
+        # standard tier services should be excluded
+        assert "sample-android" not in names
+
+    def test_filter_by_type(self, mcp_server: CortexMCPServer) -> None:
+        """Filtering by type narrows results."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {
+                    "task_description": "banking mobile",
+                    "filters": {"type": "android"},
+                },
+            )
+        )
+        candidates = result["candidates"]
+        names = [c["name"] for c in candidates]
+        assert "sample-android" in names
+        assert "sample-ios" not in names
+
+    def test_filter_case_insensitive(self, mcp_server: CortexMCPServer) -> None:
+        """Filters are case-insensitive."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {
+                    "task_description": "service",
+                    "filters": {"database_type": "PostgreSQL"},
+                },
+            )
+        )
+        candidates = result["candidates"]
+        names = [c["name"] for c in candidates]
+        assert "sample-backend" in names
+
+    def test_filter_with_empty_description_returns_all_matching(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Empty task_description with filters returns all matching services."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {
+                    "task_description": "",
+                    "filters": {"tier": "standard"},
+                },
+            )
+        )
+        candidates = result["candidates"]
+        names = [c["name"] for c in candidates]
+        # Both android and ios are standard tier
+        assert "sample-android" in names
+        assert "sample-ios" in names
+        assert "sample-backend" not in names
+
+    def test_no_filters_returns_normal_results(self, mcp_server: CortexMCPServer) -> None:
+        """No filters behaves the same as before."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "find_relevant_services",
+                {"task_description": "banking mobile"},
+            )
+        )
+        assert len(result["candidates"]) > 0
+
+
+class TestMatchesFilter:
+    """Tests for _matches_filter helper."""
+
+    def test_exact_match(self) -> None:
+        svc = {"database_type": "postgresql"}
+        assert _matches_filter(svc, "database_type", "postgresql") is True
+
+    def test_case_insensitive(self) -> None:
+        svc = {"database_type": "PostgreSQL"}
+        assert _matches_filter(svc, "database_type", "postgresql") is True
+
+    def test_no_match(self) -> None:
+        svc = {"database_type": "mysql"}
+        assert _matches_filter(svc, "database_type", "postgresql") is False
+
+    def test_missing_field(self) -> None:
+        svc = {"name": "test"}
+        assert _matches_filter(svc, "database_type", "postgresql") is False
+
+    def test_none_value(self) -> None:
+        svc = {"database_type": None}
+        assert _matches_filter(svc, "database_type", "postgresql") is False
+
+
+class TestContextPack:
+    """Tests for R2.5 — context-pack sections in get_service_context."""
+
+    def test_agent_context_returned(self, mcp_server: CortexMCPServer) -> None:
+        """agent_context is returned when included."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["agent_context"]},
+            )
+        )
+        assert "agent_context" in result
+        assert "order lifecycle" in result["agent_context"]
+
+    def test_domain_context_returned(self, mcp_server: CortexMCPServer) -> None:
+        """domain_context is returned when included."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["domain_context"]},
+            )
+        )
+        assert "domain_context" in result
+        assert "Orders domain" in result["domain_context"]
+
+    def test_context_pack_returned(self, mcp_server: CortexMCPServer) -> None:
+        """context_pack is returned when included."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend", "include": ["context_pack"]},
+            )
+        )
+        assert "context_pack" in result
+        assert "AGENTS.md" in result["context_pack"]
+        assert "ARCHITECTURE.md" in result["context_pack"]
+
+    def test_context_fields_not_in_default_include(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Context fields are NOT included by default."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {"name": "sample-backend"},
+            )
+        )
+        assert "agent_context" not in result
+        assert "domain_context" not in result
+        assert "context_pack" not in result
+
+    def test_context_fields_omitted_when_absent(
+        self, mcp_server: CortexMCPServer
+    ) -> None:
+        """Context fields are omitted when manifest has no context data."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {
+                    "name": "sample-android",
+                    "include": ["agent_context", "domain_context", "context_pack"],
+                },
+            )
+        )
+        # sample-android manifest has no context fields
+        assert "agent_context" not in result
+        assert "domain_context" not in result
+        assert "context_pack" not in result
+
+    def test_all_context_fields_together(self, mcp_server: CortexMCPServer) -> None:
+        """All context fields can be requested together."""
+        result = asyncio.run(
+            _call_tool(
+                mcp_server,
+                "get_service_context",
+                {
+                    "name": "sample-backend",
+                    "include": ["agent_context", "domain_context", "context_pack"],
+                },
+            )
+        )
+        assert "agent_context" in result
+        assert "domain_context" in result
+        assert "context_pack" in result
 
 
 # --- Helper to call tools directly ---

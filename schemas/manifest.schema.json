@@ -430,6 +430,23 @@
       "type": ["string", "null"],
       "format": "uri",
       "description": "Swagger/OpenAPI documentation URL (Dev environment default). Format: https://asv{region}{env}{webapp_name}.azurewebsites.net/{webapp_name}/v3/api-docs"
+    },
+    "agent_context": {
+      "type": ["string", "null"],
+      "description": "Content of AGENTS.md or CLAUDE.md from the repo root, providing AI agent context about the project"
+    },
+    "domain_context": {
+      "type": ["string", "null"],
+      "description": "Content of domain.md from the repo's AI context pack, describing business entities and domain rules"
+    },
+    "context_pack": {
+      "type": ["object", "null"],
+      "additionalProperties": { "type": "string" },
+      "description": "Map of filename (without extension) to content for all markdown files in the repo's AI context pack directory"
+    },
+    "enriched_purpose": {
+      "type": ["string", "null"],
+      "description": "Auto-generated enriched purpose derived from AGENTS.md/CLAUDE.md content, supplementing the human-written purpose"
     }
   },
   "additionalProperties": false

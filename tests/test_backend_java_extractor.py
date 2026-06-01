@@ -3308,7 +3308,7 @@ class TestDtoSchemaExtraction:
 
     def test_build_class_index(self, sample_backend_java_repo):
         """Test that class index maps class names to file paths."""
-        index = self.extractor._build_class_index(sample_backend_java_repo)
+        index, _fw = self.extractor._build_class_index(sample_backend_java_repo)
         assert "CreateOrderRequest" in index
         assert "OrderDto" in index
         assert "OrderStatus" in index
@@ -3709,7 +3709,7 @@ data class OrderDto(
 
     def test_circular_reference_safe(self, sample_backend_java_repo):
         """Circular references (A→B→A) should resolve without infinite recursion."""
-        class_index = self.extractor._build_class_index(sample_backend_java_repo)
+        class_index, _fw = self.extractor._build_class_index(sample_backend_java_repo)
         # Ensure both circular classes are in the index
         assert "CircularA" in class_index
         assert "CircularB" in class_index
@@ -3733,7 +3733,7 @@ data class OrderDto(
 
     def test_unresolvable_type_skipped(self, sample_backend_java_repo):
         """Types not found in the class index should be silently skipped."""
-        class_index = self.extractor._build_class_index(sample_backend_java_repo)
+        class_index, _fw = self.extractor._build_class_index(sample_backend_java_repo)
         schemas: dict = {}
 
         # Should not raise any exception
@@ -3787,7 +3787,7 @@ data class OrderDto(
             "}\n"
         )
 
-        class_index = self.extractor._build_class_index(tmp_path)
+        class_index, _fw = self.extractor._build_class_index(tmp_path)
         assert "TypeA" in class_index
         assert "TypeB" in class_index
         assert "TypeC" in class_index
@@ -3819,7 +3819,7 @@ data class OrderDto(
                 f"}}\n"
             )
 
-        class_index = self.extractor._build_class_index(tmp_path)
+        class_index, _fw = self.extractor._build_class_index(tmp_path)
         schemas: dict = {}
         self.extractor._resolve_dto_types(
             {"Type1"}, class_index, tmp_path, schemas, depth=0
@@ -3994,7 +3994,7 @@ public class SeatController {
 ''')
 
         extractor = BackendJavaExtractor()
-        class_index = extractor._build_class_index(tmp_path)
+        class_index, _fw = extractor._build_class_index(tmp_path)
 
         # SeatController should be indexed by file stem
         assert "SeatController" in class_index
@@ -4021,7 +4021,7 @@ public class SeatController {
 ''')
 
         extractor = BackendJavaExtractor()
-        class_index = extractor._build_class_index(tmp_path)
+        class_index, _fw = extractor._build_class_index(tmp_path)
 
         # SeatEvent should point to the standalone file, not the inner class
         assert class_index["SeatEvent"] == event_file
@@ -4134,7 +4134,7 @@ public class MyController {
 ''')
 
         extractor = BackendJavaExtractor()
-        class_index = extractor._build_class_index(tmp_path)
+        class_index, _fw = extractor._build_class_index(tmp_path)
 
         assert "MyController" in class_index
         assert "RealInner" in class_index
@@ -4142,3 +4142,153 @@ public class MyController {
         assert "InBlockComment" not in class_index
         assert "InJavadoc" not in class_index
         assert "FakeInner" not in class_index
+
+
+# ---------------------------------------------------------------------------
+# R1.1 — _KNOWN_FRAMEWORK_TYPES exclusion in _is_valid_dto_name
+# ---------------------------------------------------------------------------
+
+
+class TestKnownFrameworkTypesExcluded:
+    """Verify that well-known framework/library classes are rejected by _is_valid_dto_name."""
+
+    extractor = BackendJavaExtractor()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # Spring Framework
+            "ApplicationEventPublisher",
+            "WebClient",
+            "RestTemplate",
+            "ObjectMapper",
+            "RedisTemplate",
+            "JdbcTemplate",
+            # Java stdlib
+            "Clock",
+            "ScheduledExecutorService",
+            "ExecutorService",
+            "ConcurrentHashMap",
+            "AtomicInteger",
+            "Logger",
+            "SecureRandom",
+            # Spring Kafka
+            "KafkaTemplate",
+            "KafkaAdmin",
+            "StreamsBuilder",
+            # Spring Security
+            "AuthenticationManager",
+            "HttpSecurity",
+            # Spring Data
+            "JpaRepository",
+            "Pageable",
+            "Page",
+            # Servlet API
+            "HttpSession",
+            "MediaType",
+            "HttpStatus",
+        ],
+    )
+    def test_known_framework_types_excluded_from_dto_resolution(self, name: str):
+        """Classes in _KNOWN_FRAMEWORK_TYPES must be rejected by _is_valid_dto_name."""
+        assert self.extractor._is_valid_dto_name(name) is False
+
+    def test_regular_dto_still_accepted(self):
+        """A normal DTO name should still pass validation."""
+        assert self.extractor._is_valid_dto_name("CreateOrderRequest") is True
+        assert self.extractor._is_valid_dto_name("OrderDto") is True
+
+
+# ---------------------------------------------------------------------------
+# R1.2 — Framework package-prefix filtering in _resolve_dto_types
+# ---------------------------------------------------------------------------
+
+
+class TestFrameworkPackagePrefixFiltering:
+    """Verify that classes imported from framework packages are skipped during DTO resolution."""
+
+    extractor = BackendJavaExtractor()
+
+    def test_framework_package_prefix_filtering(self, tmp_path):
+        """Classes imported from framework packages should not be resolved as DTOs."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        # A controller that references a framework class (ObjectMapper) and a real DTO
+        (src / "MyController.java").write_text(
+            "package com.example;\n"
+            "import com.fasterxml.jackson.databind.ObjectMapper;\n"
+            "import org.springframework.web.bind.annotation.RestController;\n"
+            "\n"
+            "@RestController\n"
+            "public class MyController {\n"
+            "    private ObjectMapper mapper;\n"
+            "}\n"
+        )
+
+        # A real DTO class
+        (src / "MyDto.java").write_text(
+            "package com.example;\n"
+            "public class MyDto {\n"
+            "    private String name;\n"
+            "}\n"
+        )
+
+        class_index, framework_imports = self.extractor._build_class_index(tmp_path)
+
+        # ObjectMapper should be in framework_imports
+        assert "ObjectMapper" in framework_imports
+        # RestController is an annotation import — should also be captured
+        assert "RestController" in framework_imports
+
+        # MyDto should NOT be in framework_imports
+        assert "MyDto" not in framework_imports
+
+        # Resolve DTOs — ObjectMapper should be skipped, MyDto should resolve
+        schemas: dict = {}
+        self.extractor._resolve_dto_types(
+            {"MyDto", "ObjectMapper"},
+            class_index,
+            tmp_path,
+            schemas,
+            depth=0,
+            framework_imports=framework_imports,
+        )
+
+        assert "MyDto" in schemas
+        assert "ObjectMapper" not in schemas
+
+    def test_framework_import_not_found_in_repo_skipped_silently(self, tmp_path):
+        """Framework classes not in the repo should be silently skipped (no error)."""
+        src = tmp_path / "src" / "main" / "java" / "com" / "example"
+        src.mkdir(parents=True)
+
+        (src / "Service.java").write_text(
+            "package com.example;\n"
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "import org.springframework.stereotype.Service;\n"
+            "\n"
+            "@Service\n"
+            "public class Service {\n"
+            "    private KafkaTemplate<String, String> kafka;\n"
+            "}\n"
+        )
+
+        class_index, framework_imports = self.extractor._build_class_index(tmp_path)
+
+        # KafkaTemplate is imported from a framework package
+        assert "KafkaTemplate" in framework_imports
+
+        # KafkaTemplate is NOT in the class index (no KafkaTemplate.java in repo)
+        # It should be silently skipped
+        schemas: dict = {}
+        self.extractor._resolve_dto_types(
+            {"KafkaTemplate"},
+            class_index,
+            tmp_path,
+            schemas,
+            depth=0,
+            framework_imports=framework_imports,
+        )
+
+        assert "KafkaTemplate" not in schemas

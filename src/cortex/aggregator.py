@@ -197,6 +197,9 @@ def _manifest_to_graph_entry(manifest: dict) -> GraphEntry:
         framework=manifest.get("framework"),
         kafka_produces=manifest.get("kafka_produces", []),
         kafka_consumes=manifest.get("kafka_consumes", []),
+        database_type=manifest.get("database_type"),
+        cache_type=manifest.get("cache_type"),
+        swagger_url=manifest.get("swagger_url"),
     )
 
 
