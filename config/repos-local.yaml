@@ -14,7 +14,10 @@ repos:
   owner: team-backend
   domain: access-control
   tier: critical
-  purpose: Validates fan/staff access at arena entry points (NFC, biometric, tap-to-pay), resolves parking events via license plate recognition, and handles AiFi zone entry for frictionless commerce. Integrates with identity, ticketing, payments, entitlements, credential, loyalty, and Paravision (facial recognition).
+  purpose: Validates fan/staff access at arena entry points (NFC, biometric, tap-to-pay),
+    resolves parking events via license plate recognition, and handles AiFi zone entry
+    for frictionless commerce. Integrates with identity, ticketing, payments, entitlements,
+    credential, loyalty, and Paravision (facial recognition).
   swagger_url: https://asvaw3devaccesscontrol.azurewebsites.net/accesscontrol/v3/api-docs
 - name: accesscontrol-processor-microservice
   path: .repos/accesscontrol-processor-microservice
@@ -22,7 +25,10 @@ repos:
   owner: team-backend
   domain: access-control
   tier: critical
-  purpose: Consumes access-control and anti-spoofing Kafka events for persistence and historical analysis. Runs scheduled jobs for biometric data clearing (Paravision), deleted account history sync, and historical fan event aggregation. Sends anti-spoofing alerts to MS Teams.
+  purpose: Consumes access-control and anti-spoofing Kafka events for persistence
+    and historical analysis. Runs scheduled jobs for biometric data clearing (Paravision),
+    deleted account history sync, and historical fan event aggregation. Sends anti-spoofing
+    alerts to MS Teams.
   swagger_url: https://asvaw3devaccesscontrolprocessor.azurewebsites.net/accesscontrolprocessor/v3/api-docs
 - name: admin-tool
   path: .repos/admin-tool
@@ -30,7 +36,10 @@ repos:
   owner: team-backend
   domain: access-control
   tier: standard
-  purpose: BFF for the admin web portal, aggregating 10+ downstream services (identity, ticketing, entitlements, back-of-house, suites, staff, locations, configuration, IoT, notifications). Manages settings, entitlement promises by section/event, AEM content fetching, and Adobe CMS integration.
+  purpose: BFF for the admin web portal, aggregating 10+ downstream services (identity,
+    ticketing, entitlements, back-of-house, suites, staff, locations, configuration,
+    IoT, notifications). Manages settings, entitlement promises by section/event,
+    AEM content fetching, and Adobe CMS integration.
   swagger_url: https://asvaw3devadmintool.azurewebsites.net/admintool/v3/api-docs
 - name: ambientcontrol-microservice
   path: .repos/ambientcontrol-microservice
@@ -38,7 +47,10 @@ repos:
   owner: team-backend
   domain: arena-experience
   tier: standard
-  purpose: Controls suite and bowl-section HVAC temperature and lighting via Schneider Electric BMS integration. Manages fan temperature polls (vote hot/cold per seat section) with scheduled evaluation. Consumes NBA play-by-play events for game-reactive automation.
+  purpose: Controls suite and bowl-section HVAC temperature and lighting via Schneider
+    Electric BMS integration. Manages fan temperature polls (vote hot/cold per seat
+    section) with scheduled evaluation. Consumes NBA play-by-play events for game-reactive
+    automation.
   swagger_url: https://asvawudevambientcontrol.azurewebsites.net/ambientcontrol/v3/api-docs
 - name: backofhouse-microservice
   path: .repos/backofhouse-microservice
@@ -46,7 +58,10 @@ repos:
   owner: team-backend
   domain: operations
   tier: standard
-  purpose: Manages Genetec physical access control system integration — cardholder groups, credential entities, door activity reports, and cardholder sync. Runs scheduled jobs for credential clearing, cardholder sync, and Genetec interface activation.
+  purpose: Manages Genetec physical access control system integration — cardholder
+    groups, credential entities, door activity reports, and cardholder sync. Runs
+    scheduled jobs for credential clearing, cardholder sync, and Genetec interface
+    activation.
   swagger_url: https://asvaw3devbackofhouse.azurewebsites.net/backofhouse/v3/api-docs
 - name: commerce-microservice
   path: .repos/commerce-microservice
@@ -54,7 +69,10 @@ repos:
   owner: team-backend
   domain: commerce
   tier: critical
-  purpose: Manages in-venue retail commerce — product catalogs, ordering, and Microsoft Dynamics 365 POS integration. Consumes Kafka events from Microsoft commerce, entitlements, and ticketing for order lifecycle management. Integrates with payments, locations, suites, identity, and notifications.
+  purpose: Manages in-venue retail commerce — product catalogs, cart lifecycle (create/suspend/resume/checkout/void),
+    suite hospitality ordering, parking, and EV charging purchases via Microsoft Dynamics
+    365 POS. Runs 8 scheduled jobs. Consumes Kafka events from Microsoft commerce,
+    entitlements, and ticketing. Backed by Cosmos DB + Azure Blob Storage + Redis.
   swagger_url: https://asvaw3devcommerce.azurewebsites.net/commerce/v3/api-docs
 - name: configuration-microservice
   path: .repos/configuration-microservice
@@ -62,7 +80,9 @@ repos:
   owner: team-backend
   domain: platform
   tier: standard
-  purpose: CRUD API for Azure App Configuration key-value entries with label-based filtering. Provides health check, cache invalidation, and key/label lookup endpoints. Backed by Azure App Configuration SDK with Redis caching — no database, no Kafka.
+  purpose: CRUD API for Azure App Configuration key-value entries with label-based
+    filtering. Provides health check, cache invalidation, and key/label lookup endpoints.
+    Backed by Azure App Configuration SDK with Redis caching — no database, no Kafka.
   swagger_url: https://asvaw3devconfiguration.azurewebsites.net/configuration/v3/api-docs
 - name: credentialid-microservice
   path: .repos/credentialid-microservice
@@ -70,7 +90,11 @@ repos:
   owner: team-backend
   domain: identity
   tier: critical
-  purpose: Manages Apple Wallet pass lifecycle — issuance, updates, and revocation of digital NFC credentials. Consumes Kafka events for identity changes and entitlement lifecycle to keep passes in sync. Integrates with Apple onboarding APIs and Paravision for biometric enrollment.
+  purpose: Manages digital identity pass lifecycle for Apple Wallet and Google Wallet
+    — issuance, activation, suspension, expiration, and revocation of NFC credentials.
+    Consumes Kafka events for identity changes and entitlement lifecycle to keep passes
+    in sync. Integrates with Apple/Google onboarding APIs and Paravision for biometric
+    enrollment.
   swagger_url: https://asvaw3devcredentialid.azurewebsites.net/credentialid/v3/api-docs
 - name: datams-microservice
   path: .repos/datams-microservice
@@ -78,7 +102,11 @@ repos:
   owner: team-backend
   domain: data
   tier: standard
-  purpose: Kafka Streams processor for data transformation pipelines — reads from input topics and writes to output topics. Minimal service with no REST API endpoints, no database, and no outbound HTTP calls.
+  purpose: Kafka Streams processor serving as the data preprocessing layer for the
+    Customer Data Platform (CDP). Transforms raw event streams (ticketing, fan engagement,
+    commerce, venue operations) from input topics to CDP-ready output topics with
+    exactly-once processing semantics. Minimal service — no REST API, no database,
+    no outbound HTTP calls.
   swagger_url: https://asvaw3devdatams.azurewebsites.net/datams/v3/api-docs
 - name: entitlements-microservice
   path: .repos/entitlements-microservice
@@ -86,7 +114,10 @@ repos:
   owner: team-backend
   domain: entitlements
   tier: critical
-  purpose: Manages fan entitlements (parking, club access, suite access, rewards) — creation, redemption, transfer, update, deletion, and scheduled expiration. Produces lifecycle events to 7 Kafka topics and consumes creation requests, identity upgrades, and account deletions.
+  purpose: Manages fan entitlements (parking, club access, suite access, rewards)
+    — creation, redemption, transfer, update, deletion, and scheduled expiration.
+    Produces lifecycle events to 7 Kafka topics and consumes creation requests, identity
+    upgrades, and account deletions.
   swagger_url: https://asvaw3deventitlements.azurewebsites.net/entitlements/v3/api-docs
 - name: evcharge-microservice
   path: .repos/evcharge-microservice
@@ -94,7 +125,9 @@ repos:
   owner: team-backend
   domain: parking
   tier: standard
-  purpose: Manages EV charging sessions using OCPI protocol — syncs charger locations and tariffs from Greenlots CPO, tracks charging sessions, and pushes session events and notifications via Kafka. Integrates with identity service for user lookup.
+  purpose: Manages EV charging sessions using OCPI protocol — syncs charger locations
+    and tariffs from Greenlots CPO, tracks charging sessions, and pushes session events
+    and notifications via Kafka. Integrates with identity service for user lookup.
   swagger_url: https://asvaw3devevcharge.azurewebsites.net/evcharge/v3/api-docs
 - name: frictionless-commerce-microservice
   path: .repos/frictionless-commerce-microservice
@@ -102,7 +135,10 @@ repos:
   owner: team-backend
   domain: commerce
   tier: critical
-  purpose: Orchestrates cashierless just-walk-out shopping in AiFi-powered stores — manages shopper sessions, fan recognition at IDAP devices, payment method validation, and cart/receipt processing. Consumes 12 Kafka topics and integrates with AiFi OASIS API, queue management, identity, payments, and entitlements.
+  purpose: Orchestrates cashierless just-walk-out shopping in AiFi-powered stores
+    — manages shopper sessions, fan recognition at IDAP devices, payment method validation,
+    and cart/receipt processing. Consumes 12 Kafka topics and integrates with AiFi
+    OASIS API, queue management, identity, payments, and entitlements.
   swagger_url: https://asvaw3devfrictionlesscommerce.azurewebsites.net/frictionlesscommerce/v3/api-docs
 - name: geoinfo-microservice
   path: .repos/geoinfo-microservice
@@ -110,7 +146,9 @@ repos:
   owner: team-backend
   domain: geo-info
   tier: standard
-  purpose: ZIP/postal code country validation via Google Maps Geocoding API with Redis caching
+  purpose: Validates whether a ZIP/postal code belongs to a given country using Google
+    Maps Geocoding API. Hexagonal architecture with reactive WebFlux stack, Redis
+    caching (24h TTL), and OpenAPI-first contract. No database, no Kafka.
   swagger_url: https://asvaw3devgeoinfo.azurewebsites.net/geoinfo/v3/api-docs
 - name: identity-microservice
   path: .repos/identity-microservice
@@ -118,7 +156,10 @@ repos:
   owner: team-backend
   domain: identity
   tier: critical
-  purpose: Central identity service — manages fan/staff accounts (CRUD, linking, upgrade, deletion, blocking), age verification via CLEAR, biometric enrollment via Paravision, NBA CIAM account linking, and Apple Wallet credential sync. Produces 6 Kafka identity lifecycle events and consumes 8 topics.
+  purpose: Central identity service — manages fan/staff accounts (CRUD, linking, upgrade,
+    deletion, blocking), age verification via CLEAR, biometric enrollment via Paravision,
+    NBA CIAM account linking, and Apple Wallet credential sync. Produces 6 Kafka identity
+    lifecycle events and consumes 8 topics.
   swagger_url: https://asvawudevidentity.azurewebsites.net/identity/v3/api-docs
 - name: incident-microservice
   path: .repos/incident-microservice
@@ -126,7 +167,10 @@ repos:
   owner: team-backend
   domain: operations
   tier: standard
-  purpose: Proxies incident management operations to IMS247 (third-party incident management system) — creates/retrieves incidents, fetches priority levels and resolution codes. No Kafka, no database — pure API gateway to IMS247 with Redis caching.
+  purpose: Proxies incident management operations to IMS247 (third-party incident
+    management system) — creates/retrieves incidents, fetches priority levels and
+    resolution codes. No Kafka, no database — pure API gateway to IMS247 with Redis
+    caching.
   swagger_url: https://asvaw3devincident.azurewebsites.net/incident/v3/api-docs
 - name: locations-microservice
   path: .repos/locations-microservice
@@ -134,8 +178,11 @@ repos:
   owner: team-backend
   domain: locations
   tier: critical
-  purpose: Venue location catalog (stores, clubs, suites, parkings, entrances), port/IDAP
-    device management, IoT device twins sync
+  purpose: Manages the venue location hierarchy (stores, clubs, suites, parking, entrances,
+    bowl sections) and IDAP/ZT access-point devices with 30+ operational modes. Syncs
+    device configuration via Azure IoT Device Twins, publishes location-config-changed
+    Kafka events, and maps external vendor IDs (AiFi, Ticketmaster). Backed by Cosmos
+    DB.
   swagger_url: https://asvaw3devlocationsmicroservice.azurewebsites.net/locationsmicroservice/v3/api-docs
 - name: loyalty-microservice
   path: .repos/loyalty-microservice
@@ -143,7 +190,11 @@ repos:
   owner: team-backend
   domain: loyalty
   tier: standard
-  purpose: Manages the PlayFab-backed loyalty program — points accrual, rewards, achievements, leaderboards, badges, seat pairing, and discount code generation via Microsoft Dynamics. Consumes Kafka events from access control, seat presence, payments, ticketing, and PlayFab playstream.
+  purpose: Manages the PlayFab-backed loyalty program — XP accrual, tiered rewards
+    (including a hidden Secret Tier), achievements, missions, leaderboards, badges,
+    seat pairing, and discount code generation via Microsoft Dynamics. Consumes Kafka
+    events from access control, seat presence, payments, ticketing, and PlayFab playstream.
+    Backed by Cosmos DB with Redis caching and Resilience4j circuit breakers.
   swagger_url: https://asvaw3devloyalty.azurewebsites.net/loyalty/v3/api-docs
 - name: loyalty-sa-microservice
   path: .repos/loyalty-sa-microservice
@@ -151,7 +202,11 @@ repos:
   owner: team-backend
   domain: loyalty
   tier: standard
-  purpose: Standalone data ingestion service for the loyalty system — polls NBA game data, Sorama sound level sensors, and game clock feeds, then publishes events to Kafka topics for downstream loyalty processing. No REST API consumers — purely a producer/scheduler service.
+  purpose: Standalone data ingestion service for the loyalty system — polls NBA game
+    play-by-play data, Sorama sound level sensors (via WebSocket), and game clock
+    feeds, then publishes events to Kafka topics for downstream loyalty processing.
+    Exposes admin APIs to start/stop/restart background feed processes. Purely a producer/scheduler
+    service.
   swagger_url: https://asvaw3devloyaltysa.azurewebsites.net/loyaltysa/v3/api-docs
 - name: nba-microservice
   path: .repos/nba-microservice
@@ -159,7 +214,11 @@ repos:
   owner: team-backend
   domain: entertainment
   tier: standard
-  purpose: Fetches live NBA game data (scores, play-by-play, schedules, player stats) from the NBA API and publishes events to Kafka. Integrates with WSC Sports for video highlights and pushes game data to Adobe Experience Platform via HTTP data streams.
+  purpose: Official NBA data integration layer — fetches live game data (scores, play-by-play,
+    schedules, player/team stats, lineups, box scores) from the NBA API and publishes
+    to Kafka topics (nba-game-scores-event, nba-play-by-play-event). Integrates with
+    WSC Sports for video highlights and pushes game data to Adobe Experience Platform.
+    Backed by Cosmos DB with Redis caching.
   swagger_url: https://asvaw3devnba.azurewebsites.net/nba/v3/api-docs
 - name: notifications-microservice
   path: .repos/notifications-microservice
@@ -167,7 +226,10 @@ repos:
   owner: team-backend
   domain: notifications
   tier: standard
-  purpose: Multi-channel notification delivery — push notifications via Apple APNs, SMS via Infobip, email via Azure Communication Services, and journey-triggered messages via Adobe Journey Optimizer (AJO). Consumes Kafka events for push requests and NBA game events.
+  purpose: Multi-channel notification delivery — push notifications and Live Activities
+    via Apple APNs, SMS via Infobip, email via Azure Communication Services, and journey-triggered
+    messages via Adobe Journey Optimizer (AJO). Consumes Kafka events for push requests
+    and NBA game events. Publishes real-time game score updates as iOS Live Activities.
   swagger_url: https://asvaw3devnotifications.azurewebsites.net/notifications/v3/api-docs
 - name: offlinecache-microservice
   path: .repos/offlinecache-microservice
@@ -175,7 +237,11 @@ repos:
   owner: team-backend
   domain: platform
   tier: standard
-  purpose: Pre-computes and caches fan-specific data bundles (entitlements, identity, tickets, biometric records) for offline/low-latency mobile access. Consumes entitlement creation events from Kafka to trigger cache refresh.
+  purpose: Pre-computes and caches fan-specific data bundles (entitlements, identity,
+    tickets, biometric templates from Paravision) for offline/low-latency access at
+    venue entry points. Stores OfflineItems as Redis JSON with RediSearch indexes,
+    keyed by (accountId, eventName). Consumes entitlement creation events from Kafka
+    to trigger cache refresh.
   swagger_url: https://asvaw3devofflinecache.azurewebsites.net/offlinecache/v3/api-docs
 - name: payments-microservice
   path: .repos/payments-microservice
@@ -183,7 +249,11 @@ repos:
   owner: team-backend
   domain: payments
   tier: critical
-  purpose: Manages payment methods (card tokenization via Chase/JPMorgan, Apple Pay wallet decryption), processes transactions through Microsoft Dynamics 365 Commerce (cart creation, order history, refunds), and handles chargeback uploads. Produces 7 Kafka event types.
+  purpose: Manages payment methods (card tokenization via Chase CAT API, Apple Pay
+    and Google Pay wallet decryption), processes transactions through Microsoft Dynamics
+    365 Commerce (cart creation, order history, refunds), and handles chargeback uploads.
+    Produces 7 Kafka event types with Avro schemas via Confluent Schema Registry.
+    Backed by Cosmos DB (partitioned by userId) with Redis caching.
   swagger_url: https://asvaw3devpayments.azurewebsites.net/payments/v3/api-docs
 - name: preferences-microservice
   path: .repos/preferences-microservice
@@ -191,7 +261,11 @@ repos:
   owner: team-backend
   domain: identity
   tier: standard
-  purpose: Manages fan communication consent preferences (email, SMS, push) and profile data, syncing them to Adobe Experience Platform (AEP) via Kafka. Consumes identity account creation events and AEP consent blob events.
+  purpose: Manages fan communication consent preferences (email, SMS, push) with category-level
+    opt-in/opt-out granularity, and syncs them to Adobe Experience Platform (AEP)
+    via Kafka. Exposes AEP audience query endpoints. Consumes identity account creation
+    events and AEP consent blob events. Backed by Cosmos DB (partitioned by email)
+    with Redis caching.
   swagger_url: https://asvaw3devpreferences.azurewebsites.net/preferences/v3/api-docs
 - name: purchasenotifications-microservice
   path: .repos/purchasenotifications-microservice
@@ -199,7 +273,10 @@ repos:
   owner: team-backend
   domain: commerce
   tier: standard
-  purpose: Consumes anonymous purchase events from Kafka and sends transactional purchase receipts via Adobe Journey Optimizer (AJO). Fetches order details from Microsoft Dynamics 365 Commerce to enrich notification payloads. Stateless event processor — no database.
+  purpose: Consumes anonymous purchase events from Kafka and sends transactional purchase
+    receipts via Adobe Journey Optimizer (AJO). Fetches order details from Microsoft
+    Dynamics 365 Commerce to enrich notification payloads. Stateless event processor
+    — no database.
   swagger_url: https://asvaw3devpurchasenotifications.azurewebsites.net/purchasenotifications/v3/api-docs
 - name: queuemanagement-microservice
   path: .repos/queuemanagement-microservice
@@ -207,7 +284,11 @@ repos:
   owner: team-backend
   domain: operations
   tier: standard
-  purpose: Manages virtual queues for arena locations — fan queue enrollment, position tracking, resolution (admit/reject), and dead-letter handling. Produces queue resolution events consumed by access-control and frictionless-commerce.
+  purpose: Manages staff-facing event resolution workflows at venue checkpoints —
+    tracks access-control incidents through status progression (unattended → under
+    review → resolved/transferred), assigns staff handlers, and maintains audit history.
+    Produces resolution events consumed by access-control and frictionless-commerce.
+    Backed by Cosmos DB.
   swagger_url: https://asvaw3devqueuemanagement.azurewebsites.net/queuemanagement/v3/api-docs
 - name: replayengine-microservice
   path: .repos/replayengine-microservice
@@ -215,7 +296,10 @@ repos:
   owner: team-backend
   domain: entertainment
   tier: standard
-  purpose: Consumes multiple real-time Kafka streams (seat pairing, NBA play-by-play, sound levels, commerce events, fan classification, PlayFab) to drive personalized in-seat replay experiences. Integrates with identity and Microsoft Dynamics 365 Commerce for fan context.
+  purpose: Records live Kafka events (seat pairing, NBA play-by-play, sound levels,
+    commerce, fan classification, PlayFab) from production and replays them into dev/qa/staging
+    environments for testing. Supports date-based replay, sample data mapping for
+    PII masking, and fast/normal replay modes. Backed by Cosmos DB for event storage.
   swagger_url: https://asvaw3devreplayengine.azurewebsites.net/replayengine/v3/api-docs
 - name: seatpresence-microservice
   path: .repos/seatpresence-microservice
@@ -223,7 +307,10 @@ repos:
   owner: team-backend
   domain: access-control
   tier: standard
-  purpose: Tracks real-time seat occupancy by consuming access-control entry events from Kafka, then produces seat-presence and loyalty-seat-pairing events for downstream services. No outbound HTTP calls — pure event-driven processor backed by Cosmos DB.
+  purpose: Tracks real-time seat occupancy by consuming access-control entry events
+    from Kafka, then produces seat-presence and loyalty-seat-pairing events for downstream
+    services. No outbound HTTP calls — pure event-driven processor backed by Cosmos
+    DB.
   swagger_url: https://asvaw3devseatpresence.azurewebsites.net/seatpresence/v3/api-docs
 - name: staff-microservice
   path: .repos/staff-microservice
@@ -231,7 +318,10 @@ repos:
   owner: team-backend
   domain: operations
   tier: standard
-  purpose: Manages staff member profiles, roles, and organizational data. Consumes Kafka events for identity account deletion and upgrade to keep staff records in sync. Self-contained CRUD service backed by Cosmos DB.
+  purpose: Manages staff member profiles, roles, groups, and fan-handler assignments
+    via Microsoft Graph API (Azure AD/Entra ID). Supports time-bound fan-handler relationships
+    with scheduled expiration jobs. Consumes Kafka events for identity deletion, update,
+    and reassignment. Backed by Cosmos DB with Redis caching and distributed locking.
   swagger_url: https://asvaw3devstaff.azurewebsites.net/staff/v3/api-docs
 - name: suites-microservice
   path: .repos/suites-microservice
@@ -239,7 +329,11 @@ repos:
   owner: team-backend
   domain: suites
   tier: critical
-  purpose: Manages premium suite lifecycle — suite packages, guest pass invitations, event-day settings, and suite holder management. Consumes 7 Kafka topics for identity changes, location config, and ticketing events. Integrates with 10 downstream services including ambient-control for HVAC/lighting.
+  purpose: Manages premium suite lifecycle — suite packages, guest pass invitations,
+    event-day settings, temporal admin grants, and suite holder management. Consumes
+    7 Kafka topics for identity changes, location config, and ticketing events. Uses
+    PostgreSQL (44 Flyway migrations) + Cosmos DB (CQRS read layer) + Redis. Integrates
+    with 10 downstream services including ambient-control for HVAC/lighting.
   swagger_url: https://asvaw3devsuites.azurewebsites.net/suites/v3/api-docs
 - name: ticketing-microservice
   path: .repos/ticketing-microservice
@@ -247,7 +341,11 @@ repos:
   owner: team-backend
   domain: ticketing
   tier: critical
-  purpose: Manages event ticketing — ticket inventory, seat maps, purchases, redemptions, transfers, squad/sit-with-friends features, and attendance tracking. Integrates with Ticketmaster Presence and produces 11 Kafka event topics. Uses PostgreSQL (163 Flyway migrations) as primary database.
+  purpose: Tier-0 ticketing service — orchestrates purchases via Ticketmaster SDK
+    and Archtics (parking, suites, VIP, Ultimate Wall Pass), manages seat ownership/assignment
+    truth, and handles identity-based venue entry redemption via Ticketmaster Presence
+    IATS. Supports squad/sit-with-friends social seating. Produces 11 Kafka topics.
+    Uses PostgreSQL (163 Flyway migrations) + Cosmos DB (CQRS) + Redis.
   swagger_url: https://asvaw3devticketing.azurewebsites.net/ticketing/v3/api-docs
 - name: fan-app-ios
   path: .repos/fan-app-ios

@@ -323,6 +323,12 @@ gcloud run services add-iam-policy-binding cortex \
   --project=prj-ai-flow-orchestrator-gp-gc \
   --member="user:name.surname@globant.com" \
   --role="roles/run.invoker"
+
+gcloud run services add-iam-policy-binding cortex \
+  --region=us-central1 \
+  --project=prj-ai-flow-orchestrator-gp-gc \
+  --member="user:name.surname@globant.com" \
+  --role="roles/run.viewer"
 ```
 
 #### Grant access to a service account (for automated agents)
