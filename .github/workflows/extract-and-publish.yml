@@ -6,6 +6,10 @@ on:
       config:
         description: "Repos config file to use"
         default: "config/repos-real.yaml"
+      debug_auth_only:
+        description: "TEMP: skip extraction/publish, only print OIDC token claims"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 3 * * *"   # 03:00 UTC nightly (mirrors azure-pipelines.yml)
 
@@ -30,15 +34,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # TEMP DEBUG: print the OIDC token's iss/aud so the GCP WIF provider can be
+      # configured to match the globant-emu enterprise issuer. Remove once auth works.
+      - name: Debug OIDC token claims
+        if: ${{ github.event.inputs.debug_auth_only == 'true' }}
+        run: |
+          TOKEN="$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://github.com/CA-LAC059-P1" | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])')"
+          PAYLOAD="$(printf '%s' "$TOKEN" | cut -d. -f2)"
+          # base64url decode (pad as needed)
+          PAD=$(( ${#PAYLOAD} % 4 )); [ $PAD -ne 0 ] && PAYLOAD="${PAYLOAD}$(printf '=%.0s' $(seq $((4-PAD))))"
+          echo "$PAYLOAD" | tr '_-' '/+' | base64 -d 2>/dev/null | python3 -m json.tool
+
       - name: Install uv
+        if: ${{ github.event.inputs.debug_auth_only != 'true' }}
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: ${{ github.event.inputs.debug_auth_only != 'true' }}
         run: uv sync --extra ios          # ios extra needed: repos-real.yaml has ios repos
 
       - name: Run extraction + aggregation
+        if: ${{ github.event.inputs.debug_auth_only != 'true' }}
         env:
           AZURE_PAT: ${{ secrets.AZURE_PAT }}
         run: |
@@ -47,7 +66,7 @@ jobs:
             --output-dir "$OUTPUT_DIR"
 
       - name: Upload extraction output as artifact
-        if: always()
+        if: ${{ always() && github.event.inputs.debug_auth_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: cortex-output
@@ -55,6 +74,7 @@ jobs:
           retention-days: 14
 
       - name: Authenticate to Google Cloud (WIF)
+        if: ${{ github.event.inputs.debug_auth_only != 'true' }}
         uses: google-github-actions/auth@v2
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
@@ -62,5 +82,6 @@ jobs:
           service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
 
       - name: Publish to Firestore
+        if: ${{ github.event.inputs.debug_auth_only != 'true' }}
         run: |
           ./scripts/upload-to-firestore.sh "$OUTPUT_DIR" "$FIRESTORE_DATABASE"
