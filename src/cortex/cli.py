@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -366,8 +367,28 @@ def _load_repos_config(config_path: Path) -> list[dict]:
     return repos
 
 
+# git clone is retried on transient network failures (connection resets,
+# truncated transfers). Azure DevOps occasionally resets long transfers of
+# repos that contain large committed data files, which surfaces as
+# "curl 56 Recv failure: Connection reset by peer" or an HTTP 5xx mid-transfer.
+#
+# NOTE: partial clone (``--filter=blob:none|limit=...``) is intentionally NOT
+# used — Azure DevOps Git rejects blob-filter requests with HTTP 400, so a
+# filtered clone fails outright. We keep a plain shallow clone and rely on
+# retries plus a larger http.postBuffer for robustness.
+_CLONE_MAX_ATTEMPTS = 3
+_CLONE_RETRY_BACKOFF_SECONDS = 5
+
+# Larger curl buffer reduces "Connection reset by peer" on big transfers (512 MB).
+_CLONE_HTTP_POST_BUFFER = "524288000"
+
+
 def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, str]:
     """Clone a repo from URL using AZURE_PAT.
+
+    Uses a shallow clone (``--depth 1``) and retries on transient network
+    failures. Azure DevOps occasionally resets transfers of repos with large
+    committed files; retries recover from those.
 
     Args:
         name: Repo name (used for temp dir prefix and clone subdirectory).
@@ -379,7 +400,7 @@ def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, s
         Tuple of (repo_path, temp_dir_path) for cleanup.
 
     Raises:
-        RuntimeError: if AZURE_PAT is not set or clone fails.
+        RuntimeError: if AZURE_PAT is not set or clone fails after all retries.
     """
     azure_pat = os.environ.get("AZURE_PAT")
     if not azure_pat:
@@ -393,25 +414,51 @@ def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, s
 
     auth_url = inject_pat(url, azure_pat)
 
-    clone_cmd = ["git", "clone", "--depth", "1"]
+    clone_cmd = [
+        "git",
+        "-c",
+        f"http.postBuffer={_CLONE_HTTP_POST_BUFFER}",
+        "clone",
+        "--depth",
+        "1",
+    ]
     if branch:
         clone_cmd.extend(["--branch", branch])
     clone_cmd.extend([auth_url, str(clone_path)])
 
-    try:
-        result = subprocess.run(
-            clone_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"git clone failed for '{name}': {result.stderr.strip()}")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"git clone timed out for '{name}'")
+    last_error = ""
+    for attempt in range(1, _CLONE_MAX_ATTEMPTS + 1):
+        # A retried clone must start from a clean target dir.
+        if clone_path.exists():
+            shutil.rmtree(clone_path, ignore_errors=True)
 
-    return clone_path, clone_dir
+        try:
+            result = subprocess.run(
+                clone_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            if result.returncode == 0:
+                return clone_path, clone_dir
+            last_error = result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            last_error = "clone timed out"
+
+        if attempt < _CLONE_MAX_ATTEMPTS:
+            logger.warning(
+                "git clone failed, retrying",
+                repo=name,
+                attempt=attempt,
+                max_attempts=_CLONE_MAX_ATTEMPTS,
+                error=last_error,
+            )
+            time.sleep(_CLONE_RETRY_BACKOFF_SECONDS)
+
+    raise RuntimeError(
+        f"git clone failed for '{name}' after {_CLONE_MAX_ATTEMPTS} attempts: {last_error}"
+    )
 
 
 @app.command(name="clone-repos")

@@ -173,29 +173,72 @@ def test_clone_repo_no_pat_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_clone_repo_git_failure_raises(mock_env_with_pat: None, tmp_path: Path) -> None:
-    """A non-zero git returncode must raise RuntimeError."""
+    """A persistent non-zero git returncode must raise RuntimeError after retries."""
     mock_result = MagicMock()
     mock_result.returncode = 128
     mock_result.stderr = "repository not found"
 
     with (
         patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
-        patch("cortex.cli.subprocess.run", return_value=mock_result),
+        patch("cortex.cli.time.sleep"),
+        patch("cortex.cli.subprocess.run", return_value=mock_result) as mock_run,
     ):
-        with pytest.raises(RuntimeError, match="git clone failed"):
+        with pytest.raises(RuntimeError, match="git clone failed for 'my-app' after 3 attempts"):
             _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app")
+
+    # All attempts are exhausted before giving up.
+    assert mock_run.call_count == 3
+
+
+def test_clone_repo_retries_then_succeeds(mock_env_with_pat: None, tmp_path: Path) -> None:
+    """A transient failure followed by success must return without raising."""
+    failure = MagicMock()
+    failure.returncode = 128
+    failure.stderr = "Connection reset by peer"
+    success = _make_successful_run()
+
+    with (
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.time.sleep"),
+        patch(
+            "cortex.cli.subprocess.run",
+            side_effect=[failure, success],
+        ) as mock_run,
+    ):
+        _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app")
+
+    assert mock_run.call_count == 2
+
+
+def test_clone_repo_sets_large_post_buffer(mock_env_with_pat: None, tmp_path: Path) -> None:
+    """The clone command must raise http.postBuffer to survive large transfers.
+
+    Azure DevOps rejects partial-clone blob filters (HTTP 400), so robustness
+    comes from a larger curl buffer plus retries — not from filtering blobs.
+    """
+    with (
+        patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.subprocess.run", return_value=_make_successful_run()) as mock_run,
+    ):
+        _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app")
+
+    cmd = mock_run.call_args[0][0]
+    assert any(arg.startswith("http.postBuffer=") for arg in cmd)
+    # A blob filter must NOT be present (Azure DevOps rejects it).
+    assert not any("--filter=" in arg for arg in cmd)
 
 
 def test_clone_repo_timeout_raises(mock_env_with_pat: None, tmp_path: Path) -> None:
-    """A subprocess timeout must raise RuntimeError."""
+    """A persistent subprocess timeout must raise RuntimeError after retries."""
     with (
         patch("cortex.cli.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("cortex.cli.time.sleep"),
         patch(
             "cortex.cli.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="git", timeout=120),
         ),
     ):
-        with pytest.raises(RuntimeError, match="timed out"):
+        with pytest.raises(RuntimeError, match="git clone failed for 'my-app' after 3 attempts"):
             _clone_repo("my-app", "https://dev.azure.com/org/project/_git/my-app")
 
 
