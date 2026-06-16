@@ -213,6 +213,49 @@ uv run cortex run-local --config config/repos-real.yaml --output-dir ./cortex-ou
 ./scripts/upload-to-firestore.sh ./cortex-output
 ```
 
+### Automated extraction & publish (GitHub Actions)
+
+The extract → aggregate → publish flow above runs automatically in CI via
+`.github/workflows/extract-and-publish.yml`.
+
+- **Triggers:** nightly cron at `03:00 UTC`, plus manual `workflow_dispatch`
+  (optional `config` input, defaults to `config/repos-real.yaml`).
+- **What it does:** `uv sync --extra ios` → `cortex run-local` against the real
+  IntuitDome repos → `scripts/upload-to-firestore.sh` upserts `graph/latest` and
+  every `services/*/manifest.json` into the `cortex` Firestore DB. Extraction is
+  fail-soft: a single repo failing does not fail the job; `cortex-output/` is
+  uploaded as an artifact (`if: always()`, 14-day retention) so per-repo
+  `extraction-error.json` files can be inspected. The publish step exits
+  non-zero if any manifest upload fails, which marks the job failed.
+- **A `concurrency` group** (`cortex-extract-publish`, `cancel-in-progress: false`)
+  prevents the nightly cron and a manual run from writing to Firestore at once.
+
+**GCP auth = keyless Workload Identity Federation (WIF), no SA JSON key.** The
+workflow requests an OIDC token (`permissions: id-token: write`) and exchanges
+it via `google-github-actions/auth@v2`, which writes ADC that the upload script
+picks up automatically. The CI service account (`cortex-ci@...`) has only
+`roles/datastore.user` — least-privilege, upsert-only, same posture as the
+runtime SA.
+
+> **Enterprise OIDC note:** this repo lives under the `globant-emu` GitHub
+> Enterprise, which issues OIDC tokens with the issuer
+> `https://token.actions.githubusercontent.com/globant-emu` (not the plain
+> github.com issuer) and audience `https://github.com/CA-LAC059-P1`. The GCP WIF
+> provider must therefore be configured with a matching `--issuer-uri` and
+> `--allowed-audiences`, and the workflow's auth step pins
+> `audience: "https://github.com/CA-LAC059-P1"`. Using the default github.com
+> issuer fails with `invalid_grant` ("issuer ... does not match the expected ones").
+
+**Required GitHub config** (Settings → Secrets and variables → Actions):
+
+| Kind | Name | Value |
+|------|------|-------|
+| Secret | `AZURE_PAT` | Azure DevOps PAT with Code:Read on all IntuitDome projects |
+| Variable | `GCP_PROJECT_ID` | `prj-ai-flow-orchestrator-gp-gc` |
+| Variable | `GCP_WIF_PROVIDER` | WIF provider resource name (`projects/<num>/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider`) |
+| Variable | `GCP_CI_SERVICE_ACCOUNT` | `cortex-ci@prj-ai-flow-orchestrator-gp-gc.iam.gserviceaccount.com` |
+| Variable | `FIRESTORE_DATABASE` | `cortex` (optional; defaults to `cortex`) |
+
 ### Storage backends
 
 | Backend | When | Key config |
