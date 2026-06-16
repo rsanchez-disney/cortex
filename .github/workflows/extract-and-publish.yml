@@ -80,6 +80,9 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+          # globant-emu enterprise issues OIDC tokens with this fixed audience;
+          # it must match --allowed-audiences on the GCP WIF provider.
+          audience: "https://github.com/CA-LAC059-P1"
 
       - name: Publish to Firestore
         if: ${{ github.event.inputs.debug_auth_only != 'true' }}
