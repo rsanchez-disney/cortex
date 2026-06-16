@@ -1,0 +1,66 @@
+name: Cortex Extract & Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: "Repos config file to use"
+        default: "config/repos-real.yaml"
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC nightly (mirrors azure-pipelines.yml)
+
+# Avoid overlapping runs writing to Firestore simultaneously
+concurrency:
+  group: cortex-extract-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write          # REQUIRED for WIF OIDC
+
+jobs:
+  extract-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CONFIG_FILE: ${{ github.event.inputs.config || 'config/repos-real.yaml' }}
+      OUTPUT_DIR: ${{ github.workspace }}/cortex-output
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      FIRESTORE_DATABASE: ${{ vars.FIRESTORE_DATABASE || 'cortex' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --extra ios          # ios extra needed: repos-real.yaml has ios repos
+
+      - name: Run extraction + aggregation
+        env:
+          AZURE_PAT: ${{ secrets.AZURE_PAT }}
+        run: |
+          uv run cortex run-local \
+            --config "$CONFIG_FILE" \
+            --output-dir "$OUTPUT_DIR"
+
+      - name: Upload extraction output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cortex-output
+          path: cortex-output/
+          retention-days: 14
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+
+      - name: Publish to Firestore
+        run: |
+          ./scripts/upload-to-firestore.sh "$OUTPUT_DIR" "$FIRESTORE_DATABASE"
