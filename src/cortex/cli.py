@@ -32,6 +32,15 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+class CloneError(RuntimeError):
+    """Raised when a remote repo fails to clone.
+
+    Distinguished from other extraction failures so the pipeline can refuse to
+    publish incomplete content (a repo that never cloned has no source to
+    extract from, so its data would silently be missing from the graph).
+    """
+
+
 # Fields that are config-only (not ServiceYaml fields)
 _CONFIG_ONLY_FIELDS = {"path", "url", "branch"}
 
@@ -223,6 +232,14 @@ def run_local(
     ),
     repo_name: str | None = typer.Option(None, help="Single repo name (used with --repo-path)"),
     output_dir: Path = typer.Option("./cortex-output", help="Output directory for local storage"),
+    fail_on_clone_error: bool = typer.Option(
+        False,
+        "--fail-on-clone-error",
+        help=(
+            "Exit non-zero if any remote repo failed to clone. Use in CI to refuse "
+            "publishing incomplete content when a repo could not be fetched."
+        ),
+    ),
 ) -> None:
     """Run the full extract->aggregate->report pipeline locally.
 
@@ -287,17 +304,23 @@ def run_local(
             results.append({"name": name, "status": "success"})
 
         except Exception as e:
-            # Fail-soft: log error, continue with other repos
+            # Fail-soft: log error, continue with other repos.
+            # Clone failures are tracked separately: a repo that never cloned has
+            # no source to extract from, so publishing would silently drop its data.
+            is_clone_error = isinstance(e, CloneError)
+            phase = "clone" if is_clone_error else "extraction"
             error = ExtractionError(
                 repo=name,
                 timestamp=datetime.now(UTC),
                 error=str(e),
-                phase="extraction",
+                phase=phase,
             )
             error_data = json.loads(error.model_dump_json())
             storage.write_json(f"services/{name}/extraction-error.json", error_data)
-            typer.echo(f"  FAIL: {name} — {e}", err=True)
-            results.append({"name": name, "status": "failed", "error": str(e)})
+            typer.echo(f"  FAIL ({phase}): {name} — {e}", err=True)
+            results.append(
+                {"name": name, "status": "failed", "phase": phase, "error": str(e)}
+            )
 
         finally:
             # Clean up clone directory if we created one
@@ -317,9 +340,25 @@ def run_local(
     # Summary
     success = sum(1 for r in results if r["status"] == "success")
     failed = sum(1 for r in results if r["status"] == "failed")
+    clone_failures = [r["name"] for r in results if r.get("phase") == "clone"]
     typer.echo("")
     typer.echo(f"Done: {success} succeeded, {failed} failed out of {len(results)} repos")
     typer.echo(f"Output: {output_dir}")
+
+    if clone_failures:
+        typer.echo("", err=True)
+        typer.echo(
+            f"Clone failures ({len(clone_failures)}): {', '.join(clone_failures)}",
+            err=True,
+        )
+        if fail_on_clone_error:
+            typer.echo(
+                "Refusing to continue: one or more repos could not be cloned and "
+                "their content would be missing from the published graph "
+                "(--fail-on-clone-error).",
+                err=True,
+            )
+            raise typer.Exit(code=1)
 
 
 def _extract_service_data(repo: dict) -> dict:
@@ -400,11 +439,11 @@ def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, s
         Tuple of (repo_path, temp_dir_path) for cleanup.
 
     Raises:
-        RuntimeError: if AZURE_PAT is not set or clone fails after all retries.
+        CloneError: if AZURE_PAT is not set or clone fails after all retries.
     """
     azure_pat = os.environ.get("AZURE_PAT")
     if not azure_pat:
-        raise RuntimeError(
+        raise CloneError(
             f"AZURE_PAT environment variable required for cloning repo '{name}' from URL. "
             f"Set it or use a local 'path' instead."
         )
@@ -456,7 +495,7 @@ def _clone_repo(name: str, url: str, branch: str | None = None) -> tuple[Path, s
             )
             time.sleep(_CLONE_RETRY_BACKOFF_SECONDS)
 
-    raise RuntimeError(
+    raise CloneError(
         f"git clone failed for '{name}' after {_CLONE_MAX_ATTEMPTS} attempts: {last_error}"
     )
 

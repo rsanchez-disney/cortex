@@ -17,6 +17,7 @@ concurrency:
 permissions:
   contents: read
   id-token: write          # REQUIRED for WIF OIDC
+  issues: write            # REQUIRED to open a failure-notification issue
 
 jobs:
   extract-and-publish:
@@ -38,14 +39,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra ios          # ios extra needed: repos-real.yaml has ios repos
 
+      # --fail-on-clone-error makes the step (and job) fail if any repo could not
+      # be cloned, so we never publish a graph that is silently missing a repo.
+      # Extraction still runs fail-soft for every repo that *was* cloned.
       - name: Run extraction + aggregation
         env:
           AZURE_PAT: ${{ secrets.AZURE_PAT }}
         run: |
           uv run cortex run-local \
             --config "$CONFIG_FILE" \
-            --output-dir "$OUTPUT_DIR"
+            --output-dir "$OUTPUT_DIR" \
+            --fail-on-clone-error
 
+      # always() so the artifact (incl. per-repo extraction-error.json) is
+      # available for debugging even when the clone-failure check above fails.
       - name: Upload extraction output as artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -64,6 +71,55 @@ jobs:
           # it must match --allowed-audiences on the GCP WIF provider.
           audience: "https://github.com/CA-LAC059-P1"
 
+      # Skipped automatically if any earlier step failed (e.g. a clone failure),
+      # so incomplete content is never pushed to Firestore.
       - name: Publish to Firestore
         run: |
           ./scripts/upload-to-firestore.sh "$OUTPUT_DIR" "$FIRESTORE_DATABASE"
+
+      # Runs only when the job failed (clone failure, extraction crash, auth or
+      # publish error). Opens/updates a GitHub issue so the failure is visible
+      # beyond GitHub's default failure email. Uses the built-in GITHUB_TOKEN.
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const title = "Cortex Extract & Publish failed";
+            const body = [
+              "The **Cortex Extract & Publish** workflow failed, so nothing was published to Firestore.",
+              "",
+              "A likely cause is one or more repos that could not be cloned (the run uses",
+              "`--fail-on-clone-error` to refuse publishing incomplete content).",
+              "",
+              `- Workflow run: ${runUrl}`,
+              `- Config: \`${process.env.CONFIG_FILE}\``,
+              "- Download the `cortex-output` artifact and inspect",
+              "  `services/*/extraction-error.json` (look for `\"phase\": \"clone\"`) to see which repos failed.",
+            ].join("\n");
+
+            const { owner, repo } = context.repo;
+            const existing = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: "open",
+              labels: "cortex-pipeline-failure",
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+                labels: ["cortex-pipeline-failure"],
+              });
+            }
