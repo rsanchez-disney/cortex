@@ -675,6 +675,59 @@ class CortexMCPServer:
             )
             return result
 
+        @self._mcp.tool()
+        async def get_recent_changes() -> dict[str, Any]:
+            """Show what changed in the platform graph since the previous extraction.
+
+            Compares the two most recent graph snapshots and returns:
+            - Added/removed/modified services
+            - Added/removed endpoints
+            - Added/removed Kafka topics
+
+            Useful for understanding recent platform evolution and impact analysis.
+            """
+            start = time.time()
+
+            from cortex.graph_diff import compute_diff
+
+            # Find graph snapshots
+            try:
+                all_files = self._storage.list("graph")
+            except (StorageError, Exception):
+                return {"error": "No graph snapshots available"}
+
+            snapshots = sorted(
+                [f for f in all_files if f.endswith(".json") and "latest" not in f]
+            )
+
+            if len(snapshots) < 2:
+                return {
+                    "message": "Need at least 2 extraction runs to compute changes. Only 1 snapshot exists.",
+                }
+
+            old_graph = self._storage.read_json(snapshots[-2])
+            new_graph = self._storage.read_json(snapshots[-1])
+
+            diff = compute_diff(old_graph, new_graph)
+
+            result = {
+                "has_changes": diff.has_changes,
+                "added_services": diff.added_services,
+                "removed_services": diff.removed_services,
+                "modified_services": diff.modified_services,
+                "added_endpoints": diff.added_endpoints,
+                "removed_endpoints": diff.removed_endpoints,
+                "added_kafka_topics": diff.added_kafka_topics,
+                "removed_kafka_topics": diff.removed_kafka_topics,
+                "snapshot_old": snapshots[-2],
+                "snapshot_new": snapshots[-1],
+            }
+
+            await self._log_query(
+                "get_recent_changes", {}, {"has_changes": diff.has_changes}, start
+            )
+            return result
+
     async def _ensure_graph(self) -> dict:
         """Load graph if not cached."""
         if self._graph is None:

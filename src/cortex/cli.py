@@ -607,11 +607,65 @@ def mcp_server(
         raise typer.Exit(code=1)
 
 
+@app.command(name="diff")
+def diff_graphs(
+    storage_backend: str = typer.Option("local", help="Storage backend: local or gcs"),
+    storage_bucket: str = typer.Option("./cortex-output", help="Storage bucket or directory path"),
+) -> None:
+    """Show what changed since the previous extraction."""
+    from cortex.graph_diff import compute_diff
+
+    storage = StorageBackend.from_config(storage_backend, storage_bucket)
+
+    # Find the two most recent graph snapshots
+    try:
+        all_files = storage.list("graph")
+    except StorageError:
+        typer.echo("No graph snapshots found. Run 'cortex run-local' first.", err=True)
+        raise typer.Exit(code=1)
+
+    snapshots = sorted(
+        [f for f in all_files if f.endswith(".json") and "latest" not in f]
+    )
+
+    if len(snapshots) < 2:
+        typer.echo("Need at least 2 graph snapshots to compute a diff.", err=True)
+        typer.echo("Run 'cortex run-local' twice to generate snapshots.")
+        raise typer.Exit(code=1)
+
+    old_path = snapshots[-2]
+    new_path = snapshots[-1]
+
+    old_graph = storage.read_json(old_path)
+    new_graph = storage.read_json(new_path)
+
+    diff = compute_diff(old_graph, new_graph)
+
+    if not diff.has_changes:
+        typer.echo("No changes detected between the last two extractions.")
+        return
+
+    typer.echo(f"Changes between {old_path} → {new_path}:\n")
+
+    if diff.added_services:
+        typer.echo(f"  + {len(diff.added_services)} service(s) added: {', '.join(diff.added_services)}")
+    if diff.removed_services:
+        typer.echo(f"  - {len(diff.removed_services)} service(s) removed: {', '.join(diff.removed_services)}")
+    if diff.modified_services:
+        typer.echo(f"  ~ {len(diff.modified_services)} service(s) modified: {', '.join(diff.modified_services)}")
+
+    typer.echo("")
+    for change in diff.changes:
+        if change.change_type == "modified" and change.details:
+            typer.echo(f"  {change.service}:")
+            for detail in change.details:
+                typer.echo(f"    {detail}")
+
+
 @app.callback()
 def main() -> None:
     """Platform Cortex — structured architectural metadata for AI agents."""
     pass
-
 
 if __name__ == "__main__":
     app()
