@@ -51,7 +51,7 @@ class ServiceYaml(BaseModel):
     name: str = Field(
         pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", description="Unique identifier, kebab-case"
     )
-    type: Literal["android", "ios", "backend-go", "backend-node", "backend-java", "web-react"]
+    type: Literal["android", "ios", "backend-go", "backend-node", "backend-java", "backend-typescript", "backend-python", "frontend-angular", "frontend-react", "web-react"]
     owner: str
     domain: str
     tier: Literal["critical", "standard", "experimental", "deprecated"]
@@ -211,7 +211,7 @@ class ServiceManifest(BaseModel):
     """The full normalized extractor output — written to services/{name}/manifest.json."""
 
     name: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
-    type: Literal["android", "ios", "backend-go", "backend-node", "backend-java", "web-react"]
+    type: Literal["android", "ios", "backend-go", "backend-node", "backend-java", "backend-typescript", "backend-python", "frontend-angular", "frontend-react", "web-react"]
     owner: str
     domain: str
     tier: Literal["critical", "standard", "experimental", "deprecated"]
