@@ -24,13 +24,20 @@ def get_extractor(service_type: str) -> Extractor:
     # Lazy imports to avoid circular dependencies
     from cortex.extractors.android import AndroidExtractor
     from cortex.extractors.backend_java import BackendJavaExtractor
+    from cortex.extractors.backend_go import BackendGoExtractor
+    from cortex.extractors.backend_python import BackendPythonExtractor
+    from cortex.extractors.backend_typescript import BackendTypeScriptExtractor
+    from cortex.extractors.frontend_angular import FrontendAngularExtractor
     from cortex.extractors.ios import IOSExtractor
 
     registry: dict[str, type[Extractor]] = {
         "android": AndroidExtractor,
         "ios": IOSExtractor,
         "backend-java": BackendJavaExtractor,
-        # "backend-go": BackendGoExtractor,  # deferred — no access to microservices
+        "backend-typescript": BackendTypeScriptExtractor,
+        "backend-go": BackendGoExtractor,
+        "backend-python": BackendPythonExtractor,
+        "frontend-angular": FrontendAngularExtractor,
     }
 
     extractor_class = registry.get(service_type)

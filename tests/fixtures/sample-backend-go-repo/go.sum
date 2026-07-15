@@ -1,0 +1,6 @@
+github.com/go-chi/chi/v5 v5.0.12 h1:ABCdef123456789/abcdef=
+github.com/go-chi/chi/v5 v5.0.12/go.mod h1:DerpDerp123456=
+github.com/jackc/pgx/v5 v5.5.5 h1:FooBar987654321/xyz=
+github.com/jackc/pgx/v5 v5.5.5/go.mod h1:BazQux654321=
+github.com/segmentio/kafka-go v0.4.47 h1:KafkaHash123456=
+github.com/segmentio/kafka-go v0.4.47/go.mod h1:KafkaMod789=
